@@ -16,28 +16,26 @@ DEFAULT_SERVER_DATA = {
     "refresh_interval_max": 120,
     "refresh_decay_step": 15,
     "group_triggers": {
-      "牛服插件": ["牛服"],
-      "牛服纯净": ["牛服"],
+      "牛": ["牛服"],
       "鸽": ["鸽服"]
     },
     "group_headers": {
-      "牛服插件": ["鸢神祈冬&原神高手", "原大牛牛", "=============="],
-      "牛服纯净": ["鸢神祈冬&原神高手", "原大牛牛", "=============="],
+      "牛": ["鸢神祈冬&原神高手", "原大牛牛", "=============="],
       "鸽": ["大唐合鸟子社区", "============"]
     },
     "servers": [
-        {"id": "59288", "group": "牛服插件", "default_name": "插件1", "display_name": "鸢神祈冬#1"},
-        {"id": "72039", "group": "牛服插件", "default_name": "插件2", "display_name": "鸢神祈冬#2"},
-        {"id": "102637", "group": "牛服插件", "default_name": "插件3", "display_name": "鸢神祈冬#3"},
-        {"id": "72041", "group": "牛服插件", "default_name": "插件4", "display_name": "鸢神祈冬#4"},
-        {"id": "99987", "group": "牛服插件", "default_name": "插件5", "display_name": "内测"},
-        {"id": "72044", "group": "牛服插件", "default_name": "插件6", "display_name": "鸢神祈冬#6"},
-        {"id": "101108", "group": "牛服纯净", "default_name": "纯净1", "display_name": "原神高手#1"},
-        {"id": "71164", "group": "牛服纯净", "default_name": "纯净2", "display_name": "原神高手#2"},
-        {"id": "71165", "group": "牛服纯净", "default_name": "纯净3", "display_name": "原神高手#3"},
-        {"id": "71166", "group": "牛服纯净", "default_name": "纯净4", "display_name": "原神高手#4"},
-        {"id": "71167", "group": "牛服纯净", "default_name": "纯净5", "display_name": "原神高手#5"},
-        {"id": "101594", "group": "牛服纯净", "default_name": "纯净6", "display_name": "原神高手#6"},
+        {"id": "59288", "group": "牛", "default_name": "插件1", "display_name": "鸢神祈冬#1"},
+        {"id": "72039", "group": "牛", "default_name": "插件2", "display_name": "鸢神祈冬#2"},
+        {"id": "102637", "group": "牛", "default_name": "插件3", "display_name": "鸢神祈冬#3"},
+        {"id": "72041", "group": "牛", "default_name": "插件4", "display_name": "鸢神祈冬#4"},
+        {"id": "99987", "group": "牛", "default_name": "插件5", "display_name": "内测"},
+        {"id": "72044", "group": "牛", "default_name": "插件6", "display_name": "鸢神祈冬#6"},
+        {"id": "101108", "group": "牛", "default_name": "纯净1", "display_name": "原神高手#1"},
+        {"id": "71164", "group": "牛", "default_name": "纯净2", "display_name": "原神高手#2"},
+        {"id": "71165", "group": "牛", "default_name": "纯净3", "display_name": "原神高手#3"},
+        {"id": "71166", "group": "牛", "default_name": "纯净4", "display_name": "原神高手#4"},
+        {"id": "71167", "group": "牛", "default_name": "纯净5", "display_name": "原神高手#5"},
+        {"id": "101594", "group": "牛", "default_name": "纯净6", "display_name": "原神高手#6"},
         {"id": "99742", "group": "鸽", "default_name": "鸽1", "display_name": "鸽子一服"},
         {"id": "99743", "group": "鸽", "default_name": "鸽2", "display_name": "鸽子二服"},
         {"id": "99744", "group": "鸽", "default_name": "鸽3", "display_name": "鸽子三服"},
@@ -243,6 +241,22 @@ class NiufuPlugin(Star):
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
+    @filter.command("牛服")
+    async def niufu_cmd(self, event: AstrMessageEvent):
+        self._trigger_active_refresh()
+        group = "牛"
+        data = self.cache.get(group) if group in self.cache else await self._build_group_info(group)
+        for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
+
+    @filter.command("鸽服")
+    async def pigeon_cmd(self, event: AstrMessageEvent):
+        self._trigger_active_refresh()
+        group = "鸽"
+        data = self.cache.get(group) if group in self.cache else await self._build_group_info(group)
+        for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
+
     @filter.command("help")
     async def help_cmd(self, event: AstrMessageEvent):
         help_text = """📖 牛服插件使用帮助
@@ -275,7 +289,7 @@ class NiufuPlugin(Star):
         msg = event.get_message_str().strip().split()
         if len(msg) > 1 and msg[1].lower() == "help":
             lines = [
-                "📖 新型多组别服务器管理帮助",
+                "📖 多组别服务器管理帮助",
                 "",
                 "🛠️ 动态组别配置指令（仅管理员可用）",
                 "/查看所有服 - 查看所有组别、识别名与在线启用状态",
@@ -292,32 +306,6 @@ class NiufuPlugin(Star):
                 "/调整刷新 <最小秒数> [最大秒数] - 设定间隔时间"
             ]
             for chunk in self._reply_at(event, "\n".join(lines)):
-                yield chunk
-
-    @filter.on_decorating_event
-    async def on_message(self, event: AstrMessageEvent):
-        msg = event.get_message_str().strip()
-        if not msg.startswith("/"): return
-        cmd = msg[1:].split()[0]
-        if cmd == "ip":
-            self._trigger_active_refresh()
-            if "ip" not in self.cache or not self.cache["ip"]:
-                self.cache["ip"] = await self._build_ip_info()
-            event.stop_event()
-            for chunk in self._reply_at(event, "\n".join(self.cache["ip"])):
-                yield chunk
-            return
-        matched_group = None
-        for g, triggers in GLOBAL_DATA.get("group_triggers", {}).items():
-            if cmd in triggers:
-                matched_group = g
-                break
-        if matched_group:
-            self._trigger_active_refresh()
-            if matched_group not in self.cache or not self.cache[matched_group]:
-                self.cache[matched_group] = await self._build_group_info(matched_group)
-            event.stop_event()
-            for chunk in self._reply_at(event, "\n".join(self.cache[matched_group])):
                 yield chunk
 
     @filter.command("查看所有服")
@@ -414,7 +402,6 @@ class NiufuPlugin(Star):
         if idx != -1:
             removed = GLOBAL_DATA["servers"].pop(idx)
             save_server_data(GLOBAL_DATA)
-            
             if not any(s["default_name"] == target_name for s in GLOBAL_DATA["servers"]):
                 if target_name in self.toggle_state:
                     self.toggle_state.pop(target_name)
