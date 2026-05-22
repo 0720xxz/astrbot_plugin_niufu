@@ -240,8 +240,7 @@ class NiufuPlugin(Star):
         if event.is_private_chat():
             yield event.plain_result(text)
         else:
-            chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"
-{text}")]
+            chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
     @filter.command("help")
@@ -292,8 +291,7 @@ class NiufuPlugin(Star):
                 "/禁用端口 <识别名/所有/所有组别名>",
                 "/调整刷新 <最小秒数> [最大秒数] - 设定间隔时间"
             ]
-            for chunk in self._reply_at(event, "
-".join(lines)):
+            for chunk in self._reply_at(event, "\n".join(lines)):
                 yield chunk
 
     @filter.on_decorating_event
@@ -306,8 +304,7 @@ class NiufuPlugin(Star):
             if "ip" not in self.cache or not self.cache["ip"]:
                 self.cache["ip"] = await self._build_ip_info()
             event.stop_event()
-            for chunk in self._reply_at(event, "
-".join(self.cache["ip"])):
+            for chunk in self._reply_at(event, "\n".join(self.cache["ip"])):
                 yield chunk
             return
         matched_group = None
@@ -320,8 +317,7 @@ class NiufuPlugin(Star):
             if matched_group not in self.cache or not self.cache[matched_group]:
                 self.cache[matched_group] = await self._build_group_info(matched_group)
             event.stop_event()
-            for chunk in self._reply_at(event, "
-".join(self.cache[matched_group])):
+            for chunk in self._reply_at(event, "\n".join(self.cache[matched_group])):
                 yield chunk
 
     @filter.command("查看所有服")
@@ -351,8 +347,7 @@ class NiufuPlugin(Star):
                 status = "启用" if self.toggle_state.get(s["default_name"], True) else "禁用"
                 lines.append(f"    🔹 识别: {s['default_name']} | 名字: {s['display_name']} [ID: {s['id']}] ({status})")
             lines.append("================")
-        for chunk in self._reply_at(event, "
-".join(lines)): yield chunk
+        for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
 
     @filter.command("列表服")
     async def list_all_servers_alias(self, event: AstrMessageEvent):
@@ -614,8 +609,7 @@ class NiufuPlugin(Star):
                 for chunk in self._reply_at(event, "当前没有管理员"): yield chunk
             else:
                 lines = ["当前管理员列表："] + [f"{i+1}. {uid}" for i, uid in enumerate(admin_list)]
-                for chunk in self._reply_at(event, "
-".join(lines)): yield chunk
+                for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
             return
         if len(parts) < 3:
             for chunk in self._reply_at(event, "请提供QQ号"): yield chunk
