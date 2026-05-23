@@ -6,7 +6,6 @@ from astrbot.api.star import Star, Context, register
 from astrbot.api import logger
 import aiohttp
 import astrbot.api.message_components as Comp
-from astrbot.api.message_components import SenderRole
 
 PLUGIN_DIR = Path(__file__).parent
 TOGGLE_FILE = PLUGIN_DIR / "toggle_state.json"
@@ -31,7 +30,7 @@ DEFAULT_SERVER_DATA = {
         {"id": "72039", "group": "牛服插件", "default_name": "插件2", "display_name": "鸢神祈冬#2"},
         {"id": "102637", "group": "牛服插件", "default_name": "插件3", "display_name": "鸢神祈冬#3"},
         {"id": "72041", "group": "牛服插件", "default_name": "插件4", "display_name": "鸢神祈冬#4"},
-        {"id": "99987", "group": "牛服插件", "default_name": "内测", "display_name": "内测"},
+        {"id": "99987", "group": "牛服插件", "default_name": "插件5", "display_name": "内测"},
         {"id": "72044", "group": "牛服插件", "default_name": "插件6", "display_name": "鸢神祈冬#6"},
         {"id": "101108", "group": "牛服纯净", "default_name": "纯净1", "display_name": "原神高手#1"},
         {"id": "71164", "group": "牛服纯净", "default_name": "纯净2", "display_name": "原神高手#2"},
@@ -69,28 +68,72 @@ GLOBAL_DATA = load_server_data()
 
 def load_toggle_state():
     if TOGGLE_FILE.exists():
-        try:
-            with open(TOGGLE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+        with open(TOGGLE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     return {s["default_name"]: True for s in GLOBAL_DATA["servers"]}
 
 def save_toggle_state(state):
     with open(TOGGLE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def is_authorized(event: AstrMessageEvent) -> bool:
-    return event.message_obj.sender.role in [SenderRole.ADMIN, SenderRole.OWNER]
+def find_cmd_config():
+    current = Path(__file__).resolve().parent
+    for _ in range(5):
+        data_json = current / "data" / "cmd_config.json"
+        if data_json.exists():
+            return data_json
+        current = current.parent
+    paths_to_check = [
+        Path.cwd() / "data" / "cmd_config.json",
+        Path.cwd() / "cmd_config.json",
+        Path(__file__).parent / "cmd_config.json"
+    ]
+    for p in paths_to_check:
+        if p.exists():
+            return p
+    return Path.cwd() / "data" / "cmd_config.json"
 
-@register("astrbot_plugin_niufu", "niufu", "query", "2.6.4")
+async def get_admin_list():
+    config_path = find_cmd_config()
+    if not config_path.exists():
+        logger.warning(f"[牛服插件] 未找到配置文件: {config_path}")
+        return []
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return [str(uid) for uid in config.get("admins_id", [])]
+    except Exception as e:
+        logger.error(f"[牛服插件] 读取管理员列表失败: {e}")
+        return []
+
+async def save_admin_list(admin_list):
+    config_path = find_cmd_config()
+    try:
+        if not config_path.exists():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump({"admins_id": admin_list}, f, ensure_ascii=False, indent=2)
+            return
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        config["admins_id"] = admin_list
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        logger.info(f"[牛服插件] 成功同步管理员列表至文件: {config_path}")
+    except Exception as e:
+        logger.error(f"[牛服插件] 保存管理员列表失败: {e}")
+
+def is_admin(sender_id: str, admin_list: list) -> bool:
+    return str(sender_id) in admin_list if admin_list else False
+
+@register("astrbot_plugin_niufu", "niufu", "query", "2.6.0")
 class NiufuPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.toggle_state = load_toggle_state()
         self.cache = {}
         self.refresh_task = None
-        self.current_interval = int(GLOBAL_DATA.get("refresh_interval_min", 30))
+        self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         self.session = None
 
     async def _get_session(self):
@@ -109,7 +152,7 @@ class NiufuPlugin(Star):
         return None
 
     def _trigger_active_refresh(self):
-        self.current_interval = int(GLOBAL_DATA.get("refresh_interval_min", 30))
+        self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         if self.refresh_task is None or self.refresh_task.done():
             self.refresh_task = asyncio.create_task(self._refresh_loop())
 
@@ -179,9 +222,10 @@ class NiufuPlugin(Star):
             except Exception:
                 pass
             await asyncio.sleep(self.current_interval)
-            imax = int(GLOBAL_DATA.get("refresh_interval_max", 120))
-            istep = int(GLOBAL_DATA.get("refresh_decay_step", 15))
-            self.current_interval = min(imax, self.current_interval + istep)
+            self.current_interval = min(
+                GLOBAL_DATA["refresh_interval_max"], 
+                self.current_interval + GLOBAL_DATA["refresh_decay_step"]
+            )
 
     async def _force_refresh_all(self):
         try:
@@ -199,54 +243,96 @@ class NiufuPlugin(Star):
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
-    def _parse_args(self, event: AstrMessageEvent, cmd_keyword: str, maxsplit: int = -1) -> list:
-        msg = event.get_message_str().strip()
-        parts = msg.split(maxsplit=maxsplit)
-        if parts and cmd_keyword in parts[0]:
-            return parts[1:]
-        return parts
-
     @filter.command("牛服")
     async def niufu_cmd(self, event: AstrMessageEvent):
-        try:
-            self._trigger_active_refresh()
-            data1 = await self._build_group_info("牛服插件")
-            data2 = await self._build_group_info("牛服纯净")
-            
-            if data1 and data1[-1] == "==============":
-                data1 = data1[:-1]
-            if data2 and data2[-1] == "==============":
-                data2 = data2[:-1]
-            
-            result = data1 + ["==============", "--- 纯净服分割线 ---", "=============="] + data2
-            
-            for chunk in self._reply_at(event, "\n".join(result)):
-                yield chunk
-        except Exception as e:
-            for chunk in self._reply_at(event, f"请求异常: {e}"): yield chunk
+        """显示牛服插件组(包括插件和纯净)的服务器状态"""
+        self._trigger_active_refresh()
+        group1 = "牛服插件"
+        group2 = "牛服纯净"
+        
+        data1 = await self._build_group_info(group1)
+        data2 = await self._build_group_info(group2)
+        
+        if data1 and data1[-1] == "==============":
+            data1 = data1[:-1]
+        if data2 and data2[-1] == "==============":
+            data2 = data2[:-1]
+        result = data1 + data2
+        for chunk in self._reply_at(event, "\n".join(result)):
+            yield chunk
 
     @filter.command("鸽服")
     async def pigeon_cmd(self, event: AstrMessageEvent):
+        """显示鸽服组状态"""
         self._trigger_active_refresh()
-        data = await self._build_group_info("鸽")
-        for chunk in self._reply_at(event, "\n".join(data)): yield chunk
+        group = "鸽"
+        data = await self._build_group_info(group)
+        for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
             
     @filter.command("ip")
     async def ip_cmd(self, event: AstrMessageEvent):
-        try:
-            self._trigger_active_refresh()
-            data = await self._build_ip_info()
-            for chunk in self._reply_at(event, "\n".join(data)):
-                yield chunk
-        except Exception as e:
-            for chunk in self._reply_at(event, f"IP查询异常: {e}"): yield chunk
+        """显示服务器的IP地址和端口"""
+        self._trigger_active_refresh()
+        data = await self._build_ip_info()
+        for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
 
-    @filter.command("查看所有服", alias=["列表服"])
+    @filter.command("help")
+    async def help_cmd(self, event: AstrMessageEvent):
+        help_text = """📖 牛服插件使用帮助
+
+查询命令
+/牛服 - 查看已启用服务器的在线人数
+/ip   - 查看已启用服务器的IP地址和端口
+/鸽服 - 查看大唐合鸟子社区在线人数
+
+开关命令(仅管理员可用)
+/启用端口 <类型><编号>   - 启用指定服务器
+/禁用端口 <类型><编号>   - 禁用指定服务器
+/启用端口 所有          - 启用所有服务器
+/禁用端口 所有          - 禁用所有服务器
+/启用端口 所有插件       - 启用所有鸢神祈冬服务器
+/禁用端口 所有插件       - 禁用所有鸢神祈冬服务器
+/启用端口 所有纯净       - 启用所有原神高手服务器
+/禁用端口 所有纯净       - 禁用所有原神高手服务器
+
+鸽服开关命令(仅管理员可用)
+/启用鸽服 <编号>        - 启用指定鸽服(1-5)
+/禁用鸽服 <编号>        - 禁用指定鸽服(1-5)
+/启用鸽服 所有          - 启用所有鸽服
+/禁用鸽服 所有          - 禁用所有鸽服"""
+        for chunk in self._reply_at(event, help_text):
+            yield chunk
+
+    @filter.command("fwq")
+    async def fwq_cmd(self, event: AstrMessageEvent):
+        msg = event.get_message_str().strip().split()
+        if len(msg) > 1 and msg[1].lower() == "help":
+            lines = [
+                "📖 多组别服务器管理帮助",
+                "",
+                "🛠️ 动态组别配置指令(仅管理员可用)",
+                "/查看所有服 - 查看所有组别、识别名与在线启用状态",
+                "/列表服     - 功能同上",
+                "/添加服 <组别名> <识别名> <ID> <展示名>",
+                "/删除服 <组别名> <识别名>",
+                "/设置组触发词 <组别名> <触发词1,触发词2...>",
+                "/设置组头部文字 <组别名> <文字1|文字2|分隔符>",
+                "/改服ID <组别名> <识别名> <新ID>",
+                "/改服名 <组别名> <识别名> <新展示名>",
+                "/改服组 <原组别名> <识别名> <新组别名>",
+                "/启用端口 <识别名/所有/所有组别名>",
+                "/禁用端口 <识别名/所有/所有组别名>",
+                "/调整刷新 <最小秒数> [最大秒数] - 设定间隔时间"
+            ]
+            for chunk in self._reply_at(event, "\n".join(lines)):
+                yield chunk
+
+    @filter.command("查看所有服")
     async def list_all_servers(self, event: AstrMessageEvent):
-        if not is_authorized(event): 
-            for chunk in self._reply_at(event, "❌ 权限不足！您不是管理员，无法使用该指令。"): yield chunk
-            return
-            
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
         if not GLOBAL_DATA["servers"]:
             for chunk in self._reply_at(event, "当前配置中暂无任何服务器"): yield chunk
             return
@@ -255,11 +341,9 @@ class NiufuPlugin(Star):
             g = s["group"]
             if g not in groups_dict: groups_dict[g] = []
             groups_dict[g].append(s)
-            
         lines = ["📊 当前所有组别及服务器列表", "================"]
         triggers_map = GLOBAL_DATA.get("group_triggers", {})
         headers_map = GLOBAL_DATA.get("group_headers", {})
-        
         for g, s_list in groups_dict.items():
             t_list = triggers_map.get(g, [])
             t_str = ",".join([f"/{t}" for t in t_list]) if t_list else "未配置"
@@ -274,19 +358,21 @@ class NiufuPlugin(Star):
             lines.append("================")
         for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
 
+    @filter.command("列表服")
+    async def list_all_servers_alias(self, event: AstrMessageEvent):
+        async for chunk in self.list_all_servers(event): yield chunk
+
     @filter.command("调整刷新")
     async def change_refresh_rate(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "调整刷新")
-        if len(args) < 1:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split()
+        if len(msg) < 2:
             for chunk in self._reply_at(event, "用法：/调整刷新 <最小秒数> [最大秒数]"): yield chunk
             return
         try:
-            imin = int(args[0])
-            imax = int(args[1]) if len(args) > 1 else imin
+            imin = int(msg[1])
+            imax = int(msg[2]) if len(msg) > 2 else imin
             if imin < 2 or imax < imin: raise ValueError
             GLOBAL_DATA["refresh_interval_min"] = imin
             GLOBAL_DATA["refresh_interval_max"] = imax
@@ -299,26 +385,21 @@ class NiufuPlugin(Star):
 
     @filter.command("添加服")
     async def add_server(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "添加服", maxsplit=3)
-        if len(args) < 4:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=4)
+        if len(msg) < 5:
             for chunk in self._reply_at(event, "用法：/添加服 <组别名> <识别名> <ID> <展示名>"): yield chunk
             return
-        group_name, default_name, sid, display_name = args[0], args[1], args[2], args[3]
-        
+        group_name, default_name, sid, display_name = msg[1], msg[2], msg[3], msg[4]
         if any(s["default_name"] == default_name and s["group"] == group_name for s in GLOBAL_DATA["servers"]):
             for chunk in self._reply_at(event, f"错误：该组别下识别名【{default_name}】已存在"): yield chunk
             return
-            
         GLOBAL_DATA["servers"].append({"id": sid, "group": group_name, "default_name": default_name, "display_name": display_name})
         if group_name not in GLOBAL_DATA["group_triggers"]:
             GLOBAL_DATA["group_triggers"][group_name] = [group_name]
         if group_name not in GLOBAL_DATA["group_headers"]:
             GLOBAL_DATA["group_headers"][group_name] = ["鸢神祈冬&原神高手", "原大牛牛", "=============="]
-        
         save_server_data(GLOBAL_DATA)
         self.toggle_state[default_name] = True
         save_toggle_state(self.toggle_state)
@@ -327,16 +408,13 @@ class NiufuPlugin(Star):
 
     @filter.command("删除服")
     async def del_server(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "删除服", maxsplit=1)
-        if len(args) < 2:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=2)
+        if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/删除服 <组别名> <识别名>"): yield chunk
             return
-        group_name, target_name = args[0], args[1]
-        
+        group_name, target_name = msg[1], msg[2]
         idx = -1
         for i, s in enumerate(GLOBAL_DATA["servers"]):
             if s["group"] == group_name and s["default_name"] == target_name:
@@ -356,15 +434,13 @@ class NiufuPlugin(Star):
 
     @filter.command("设置组触发词")
     async def set_group_triggers(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "设置组触发词", maxsplit=1)
-        if len(args) < 2:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=2)
+        if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/设置组触发词 <组别名> <触发词1,触发词2...>"): yield chunk
             return
-        group_name, triggers_str = args[0], args[1]
+        group_name, triggers_str = msg[1], msg[2]
         triggers_list = [t.strip() for t in triggers_str.replace("，", ",").split(",") if t.strip()]
         if not triggers_list:
             for chunk in self._reply_at(event, "错误：触发词列表不能为空"): yield chunk
@@ -375,15 +451,13 @@ class NiufuPlugin(Star):
 
     @filter.command("设置组头部文字")
     async def set_group_headers(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "设置组头部文字", maxsplit=1)
-        if len(args) < 2:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=2)
+        if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/设置组头部文字 <组别名> <文字1|文字2|分隔符>"): yield chunk
             return
-        group_name, headers_str = args[0], args[1]
+        group_name, headers_str = msg[1], msg[2]
         headers_list = [h.strip() for h in headers_str.split("|") if h.strip()]
         if not headers_list:
             for chunk in self._reply_at(event, "错误：头部文字格式不正确"): yield chunk
@@ -397,16 +471,13 @@ class NiufuPlugin(Star):
 
     @filter.command("改服ID")
     async def change_server_id(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "改服ID", maxsplit=2)
-        if len(args) < 3:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服ID <组别名> <识别名> <新ID>"): yield chunk
             return
-        group_name, target_name, new_id = args[0], args[1], args[2]
-        
+        group_name, target_name, new_id = msg[1], msg[2], msg[3]
         found = False
         for s in GLOBAL_DATA["servers"]:
             if s["group"] == group_name and s["default_name"] == target_name:
@@ -422,16 +493,13 @@ class NiufuPlugin(Star):
 
     @filter.command("改服名")
     async def change_server_display(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "改服名", maxsplit=2)
-        if len(args) < 3:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服名 <组别名> <识别名> <新展示名>"): yield chunk
             return
-        group_name, target_name, new_display = args[0], args[1], args[2]
-        
+        group_name, target_name, new_display = msg[1], msg[2], msg[3]
         found = False
         for s in GLOBAL_DATA["servers"]:
             if s["group"] == group_name and s["default_name"] == target_name:
@@ -447,16 +515,13 @@ class NiufuPlugin(Star):
 
     @filter.command("改服组")
     async def change_server_group(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "改服组", maxsplit=2)
-        if len(args) < 3:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服组 <原组别名> <识别名> <新组别名>"): yield chunk
             return
-        old_group, target_name, new_group = args[0], args[1], args[2]
-        
+        old_group, target_name, new_group = msg[1], msg[2], msg[3]
         found = False
         for s in GLOBAL_DATA["servers"]:
             if s["group"] == old_group and s["default_name"] == target_name:
@@ -476,16 +541,14 @@ class NiufuPlugin(Star):
 
     @filter.command("启用端口")
     async def enable(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "启用端口", maxsplit=0)
-        if len(args) < 1:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip()
+        parts = msg.split(maxsplit=1)
+        if len(parts) < 2:
             for chunk in self._reply_at(event, "用法：/启用端口 <识别名> 或 所有 / 所有[组别名]"): yield chunk
             return
-            
-        target = args[0].strip()
+        target = parts[1].strip()
         if target == "所有":
             for s in GLOBAL_DATA["servers"]: self.toggle_state[s["default_name"]] = True
             save_toggle_state(self.toggle_state)
@@ -509,16 +572,14 @@ class NiufuPlugin(Star):
 
     @filter.command("禁用端口")
     async def disable(self, event: AstrMessageEvent):
-        if not is_authorized(event):
-            for chunk in self._reply_at(event, "❌ 权限不足！"): yield chunk
-            return
-            
-        args = self._parse_args(event, "禁用端口", maxsplit=0)
-        if len(args) < 1:
+        admin_list = await get_admin_list()
+        if not is_admin(str(event.get_sender_id()), admin_list): return
+        msg = event.get_message_str().strip()
+        parts = msg.split(maxsplit=1)
+        if len(parts) < 2:
             for chunk in self._reply_at(event, "用法：/禁用端口 <识别名> 或 所有 / 所有[组别名]"): yield chunk
             return
-            
-        target = args[0].strip()
+        target = parts[1].strip()
         if target == "所有":
             for s in GLOBAL_DATA["servers"]: self.toggle_state[s["default_name"]] = False
             save_toggle_state(self.toggle_state)
@@ -542,7 +603,45 @@ class NiufuPlugin(Star):
 
     @filter.command("管理")
     async def admin_command(self, event: AstrMessageEvent):
-        for chunk in self._reply_at(event, "💡 该插件已全面接入 AstrBot 官方内置权限管理。请直接在机器人网页后台面板添加/移除‘管理员’或‘主人’账号，插件将实时同步官方权限。"): yield chunk
+        admin_list = await get_admin_list()
+        sender_id = str(event.get_sender_id())
+        if not is_admin(sender_id, admin_list): return
+        msg = event.get_message_str().strip()
+        parts = msg.split(maxsplit=2)
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, "用法：/管理 add <QQ号> 或 /管理 remove <QQ号> 或 /管理 list"): yield chunk
+            return
+        subcmd = parts[1].lower()
+        if subcmd == "list":
+            if not admin_list:
+                for chunk in self._reply_at(event, "当前没有管理员"): yield chunk
+            else:
+                lines = ["当前管理员列表："] + [f"{i+1}. {uid}" for i, uid in enumerate(admin_list)]
+                for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
+            return
+        if len(parts) < 3:
+            for chunk in self._reply_at(event, "请提供QQ号"): yield chunk
+            return
+        qq = parts[2].strip()
+        if not qq.isdigit():
+            for chunk in self._reply_at(event, "QQ号必须为纯数字"): yield chunk
+            return
+        if subcmd == "add":
+            if qq in admin_list:
+                for chunk in self._reply_at(event, f"QQ {qq} 已经是管理员了"): yield chunk
+            else:
+                admin_list.append(qq)
+                await save_admin_list(admin_list)
+                for chunk in self._reply_at(event, f"已成功添加 {qq} 为管理员"): yield chunk
+        elif subcmd in ("remove", "del"):
+            if qq not in admin_list:
+                for chunk in self._reply_at(event, f"QQ {qq} 本来就不是管理员"): yield chunk
+            else:
+                admin_list.remove(qq)
+                await save_admin_list(admin_list)
+                for chunk in self._reply_at(event, f"已成功移除 {qq} 的管理员权限"): yield chunk
+        else:
+            for chunk in self._reply_at(event, "未知子命令，可用：add, remove, list"): yield chunk
 
     async def __del__(self):
         if self.session and not self.session.closed:
