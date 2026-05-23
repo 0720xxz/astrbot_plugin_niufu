@@ -76,55 +76,11 @@ def save_toggle_state(state):
     with open(TOGGLE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def find_cmd_config():
-    current = Path(__file__).resolve().parent
-    for _ in range(5):
-        data_json = current / "data" / "cmd_config.json"
-        if data_json.exists():
-            return data_json
-        current = current.parent
-    paths_to_check = [
-        Path.cwd() / "data" / "cmd_config.json",
-        Path.cwd() / "cmd_config.json",
-        Path(__file__).parent / "cmd_config.json"
-    ]
-    for p in paths_to_check:
-        if p.exists():
-            return p
-    return Path.cwd() / "data" / "cmd_config.json"
-
-async def get_admin_list():
-    config_path = find_cmd_config()
-    if not config_path.exists():
-        logger.warning(f"[牛服插件] 未找到配置文件: {config_path}")
-        return []
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        return [str(uid) for uid in config.get("admins_id", [])]
-    except Exception as e:
-        logger.error(f"[牛服插件] 读取管理员列表失败: {e}")
-        return []
-
-async def save_admin_list(admin_list):
-    config_path = find_cmd_config()
-    try:
-        if not config_path.exists():
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump({"admins_id": admin_list}, f, ensure_ascii=False, indent=2)
-            return
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        config["admins_id"] = admin_list
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        logger.info(f"[牛服插件] 成功同步管理员列表至文件: {config_path}")
-    except Exception as e:
-        logger.error(f"[牛服插件] 保存管理员列表失败: {e}")
-
-def is_admin(sender_id: str, admin_list: list) -> bool:
-    return str(sender_id) in admin_list if admin_list else False
+# 管理员权限判定：使用 event.get_sender_role()
+def is_admin_by_role(event: AstrMessageEvent) -> bool:
+    # AstrBot 中角色值 1 或 2 表示管理员
+    role = event.get_sender_role()
+    return role in (1, 2)
 
 @register("astrbot_plugin_niufu", "niufu", "query", "2.6.0")
 class NiufuPlugin(Star):
@@ -243,9 +199,10 @@ class NiufuPlugin(Star):
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
+    # ========== 查询命令 ==========
     @filter.command("牛服")
     async def niufu_cmd(self, event: AstrMessageEvent):
-        """显示牛服插件组(包括插件和纯净)的服务器状态"""
+        """显示牛服插件组(包括插件和纯净)的服务器状态，组间强制插入分隔线，末尾追加@昵称"""
         self._trigger_active_refresh()
         group1 = "牛服插件"
         group2 = "牛服纯净"
@@ -253,11 +210,12 @@ class NiufuPlugin(Star):
         data1 = await self._build_group_info(group1)
         data2 = await self._build_group_info(group2)
         
-        if data1 and data1[-1] == "==============":
-            data1 = data1[:-1]
-        if data2 and data2[-1] == "==============":
-            data2 = data2[:-1]
+        # 确保每个组末尾都有分隔线（_build_group_info已包含分隔线）
+        # 合并两个组的数据
         result = data1 + data2
+        # 在末尾添加“查询触发者@昵称”
+        result.append(f"查询触发者@{event.get_sender_nickname()}")
+        
         for chunk in self._reply_at(event, "\n".join(result)):
             yield chunk
 
@@ -329,10 +287,17 @@ class NiufuPlugin(Star):
             for chunk in self._reply_at(event, "\n".join(lines)):
                 yield chunk
 
+    # ========== 管理员命令（全部改用 event.get_sender_role() 判定） ==========
+    async def _check_admin(self, event: AstrMessageEvent) -> bool:
+        if is_admin_by_role(event):
+            return True
+        for chunk in self._reply_at(event, "权限不足，您不是管理员"):
+            yield chunk
+        return False
+
     @filter.command("查看所有服")
     async def list_all_servers(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         if not GLOBAL_DATA["servers"]:
             for chunk in self._reply_at(event, "当前配置中暂无任何服务器"): yield chunk
             return
@@ -364,8 +329,7 @@ class NiufuPlugin(Star):
 
     @filter.command("调整刷新")
     async def change_refresh_rate(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split()
         if len(msg) < 2:
             for chunk in self._reply_at(event, "用法：/调整刷新 <最小秒数> [最大秒数]"): yield chunk
@@ -385,8 +349,7 @@ class NiufuPlugin(Star):
 
     @filter.command("添加服")
     async def add_server(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=4)
         if len(msg) < 5:
             for chunk in self._reply_at(event, "用法：/添加服 <组别名> <识别名> <ID> <展示名>"): yield chunk
@@ -408,8 +371,7 @@ class NiufuPlugin(Star):
 
     @filter.command("删除服")
     async def del_server(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=2)
         if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/删除服 <组别名> <识别名>"): yield chunk
@@ -434,8 +396,7 @@ class NiufuPlugin(Star):
 
     @filter.command("设置组触发词")
     async def set_group_triggers(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=2)
         if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/设置组触发词 <组别名> <触发词1,触发词2...>"): yield chunk
@@ -451,8 +412,7 @@ class NiufuPlugin(Star):
 
     @filter.command("设置组头部文字")
     async def set_group_headers(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=2)
         if len(msg) < 3:
             for chunk in self._reply_at(event, "用法：/设置组头部文字 <组别名> <文字1|文字2|分隔符>"): yield chunk
@@ -471,8 +431,7 @@ class NiufuPlugin(Star):
 
     @filter.command("改服ID")
     async def change_server_id(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=3)
         if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服ID <组别名> <识别名> <新ID>"): yield chunk
@@ -493,8 +452,7 @@ class NiufuPlugin(Star):
 
     @filter.command("改服名")
     async def change_server_display(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=3)
         if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服名 <组别名> <识别名> <新展示名>"): yield chunk
@@ -515,8 +473,7 @@ class NiufuPlugin(Star):
 
     @filter.command("改服组")
     async def change_server_group(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip().split(maxsplit=3)
         if len(msg) < 4:
             for chunk in self._reply_at(event, "用法：/改服组 <原组别名> <识别名> <新组别名>"): yield chunk
@@ -541,8 +498,7 @@ class NiufuPlugin(Star):
 
     @filter.command("启用端口")
     async def enable(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip()
         parts = msg.split(maxsplit=1)
         if len(parts) < 2:
@@ -572,8 +528,7 @@ class NiufuPlugin(Star):
 
     @filter.command("禁用端口")
     async def disable(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        if not is_admin(str(event.get_sender_id()), admin_list): return
+        if not await self._check_admin(event): return
         msg = event.get_message_str().strip()
         parts = msg.split(maxsplit=1)
         if len(parts) < 2:
@@ -601,47 +556,7 @@ class NiufuPlugin(Star):
             else:
                 for chunk in self._reply_at(event, f"未找到识别名为【{target}】的服务器"): yield chunk
 
-    @filter.command("管理")
-    async def admin_command(self, event: AstrMessageEvent):
-        admin_list = await get_admin_list()
-        sender_id = str(event.get_sender_id())
-        if not is_admin(sender_id, admin_list): return
-        msg = event.get_message_str().strip()
-        parts = msg.split(maxsplit=2)
-        if len(parts) < 2:
-            for chunk in self._reply_at(event, "用法：/管理 add <QQ号> 或 /管理 remove <QQ号> 或 /管理 list"): yield chunk
-            return
-        subcmd = parts[1].lower()
-        if subcmd == "list":
-            if not admin_list:
-                for chunk in self._reply_at(event, "当前没有管理员"): yield chunk
-            else:
-                lines = ["当前管理员列表："] + [f"{i+1}. {uid}" for i, uid in enumerate(admin_list)]
-                for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
-            return
-        if len(parts) < 3:
-            for chunk in self._reply_at(event, "请提供QQ号"): yield chunk
-            return
-        qq = parts[2].strip()
-        if not qq.isdigit():
-            for chunk in self._reply_at(event, "QQ号必须为纯数字"): yield chunk
-            return
-        if subcmd == "add":
-            if qq in admin_list:
-                for chunk in self._reply_at(event, f"QQ {qq} 已经是管理员了"): yield chunk
-            else:
-                admin_list.append(qq)
-                await save_admin_list(admin_list)
-                for chunk in self._reply_at(event, f"已成功添加 {qq} 为管理员"): yield chunk
-        elif subcmd in ("remove", "del"):
-            if qq not in admin_list:
-                for chunk in self._reply_at(event, f"QQ {qq} 本来就不是管理员"): yield chunk
-            else:
-                admin_list.remove(qq)
-                await save_admin_list(admin_list)
-                for chunk in self._reply_at(event, f"已成功移除 {qq} 的管理员权限"): yield chunk
-        else:
-            for chunk in self._reply_at(event, "未知子命令，可用：add, remove, list"): yield chunk
+    # 管理员管理命令已移除，因为不再依赖本地配置文件
 
     async def __del__(self):
         if self.session and not self.session.closed:
