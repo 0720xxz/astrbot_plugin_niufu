@@ -1,6 +1,6 @@
 name: astrbot_plugin_niufu
-display_name: 牛服查询
-version: 3.2
+display_name: SCP:SL服务器查询
+version: 3.4
 author: 内战狂热爱好者
 description: 查询多个SCP:SL服务器的在线人数和 IP 端口，支持端口显示独立开关
 support_platforms: ["aiocqhttp", "qq_official", "telegram"]

@@ -1,5 +1,6 @@
 import json
 import asyncio
+import re
 from pathlib import Path
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Star, Context, register
@@ -71,7 +72,7 @@ def save_blacklist(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-@register("astrbot_universal_servers", "framework", "Dynamic Server Framework", "3.6.0")
+@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.4")
 class UniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -104,23 +105,17 @@ class UniversalServerPlugin(Star):
 
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
         try:
-            adapter = event.get_platform_adapter()
-            if adapter and hasattr(adapter, 'is_admin'):
-                if await adapter.is_admin(event):
-                    return True
-
             sender_id = str(event.get_sender_id())
-            bot_config = self.context.get_config()
-            if bot_config:
-                cfg_admins = bot_config.get("admins", [])
-                cfg_master = bot_config.get("master", [])
-                admin_list = [str(x) for x in (cfg_admins if isinstance(cfg_admins, list) else [cfg_admins])]
-                master_list = [str(x) for x in (cfg_master if isinstance(cfg_master, list) else [cfg_master])]
-                if sender_id in admin_list or sender_id in master_list:
-                    return True
+            config_path = Path.cwd() / "data" / "cmd_config.json"
+            if not config_path.exists():
+                return False
+            with open(config_path, "r", encoding="utf-8-sig") as f:
+                config = json.load(f)
+            admins_id = config.get("admins_id", [])
+            return sender_id in [str(uid) for uid in admins_id]
         except Exception as e:
-            logger.error(f"[服务器框架] 动态读取官方管理员失败: {e}")
-        return False
+            logger.error(f"[服务器框架] 读取管理员列表失败: {e}")
+            return False
 
     def _is_blacklisted(self, event: AstrMessageEvent) -> bool:
         if not event.is_private_chat():
@@ -132,6 +127,21 @@ class UniversalServerPlugin(Star):
             return True
         return False
 
+    def _extract_number(self, name: str) -> int:
+        """从 display_name 中提取数字，支持阿拉伯数字和中文数字"""
+        match = re.search(r'(\d+)', name)
+        if match:
+            return int(match.group(1))
+        chinese_num_map = {
+            '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+            '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+            '百': 100, '千': 1000, '万': 10000
+        }
+        for ch in reversed(name):
+            if ch in chinese_num_map:
+                return chinese_num_map[ch]
+        return 0
+
     async def _build_group_info(self, target_group):
         headers_map = GLOBAL_DATA.get("group_headers", {})
         if target_group in headers_map:
@@ -140,6 +150,8 @@ class UniversalServerPlugin(Star):
             lines = [f"--- {target_group} 状态 ---", "=============="]
             
         servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == target_group and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+        servers.sort(key=lambda x: self._extract_number(x["display_name"]))
+        
         if not servers:
             lines.insert(1, "该组别暂无启用的服务器")
             return lines
@@ -167,6 +179,8 @@ class UniversalServerPlugin(Star):
             servers = [s for s in servers if s["group"] == target_group]
             
         active_servers = [s for s in servers if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+        active_servers.sort(key=lambda x: self._extract_number(x["display_name"]))
+        
         if not active_servers:
             lines.insert(1, "暂无启用的服务器")
             return lines
@@ -219,12 +233,23 @@ class UniversalServerPlugin(Star):
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
-    @filter.on_message()
-    async def handle_fuzzy_asking(self, event: AstrMessageEvent):
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_message(self, event: AstrMessageEvent):
         if self._is_blacklisted(event):
             return
             
         msg_str = event.get_message_str().strip()
+        
+        registered_commands = [
+            "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服",
+            "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
+            "/改服名", "/改服组", "/调整刷新"
+        ]
+        
+        for cmd in registered_commands:
+            if cmd in msg_str:
+                return
+        
         if msg_str.startswith("/") or msg_str.startswith("!"):
             return
 
@@ -289,7 +314,7 @@ class UniversalServerPlugin(Star):
 /查服 <组别名> - 实时查询指定服务器组的在线人数
 /ip [组别名]   - 查询服务器的公网连接地址与开放端口
 
-🛠 McKay 动态配置指令（仅管理员可用）
+🛠 动态配置指令（仅管理员可用）
 /查看所有服 - 查看所有组别、唯一识别名与启停状态
 /添加服 <组别名> <识别名> <API_ID> <展示名>
 /删除服 <组别名> <识别名>
@@ -346,14 +371,15 @@ class UniversalServerPlugin(Star):
             g = s["group"]
             if g not in groups_dict: groups_dict[g] = []
             groups_dict[g].append(s)
-        lines = ["📊 核心架构全组别资产清单", "================"]
+        lines = ["📊 核心架构全组别清单", "================"]
         headers_map = GLOBAL_DATA.get("group_headers", {})
         for g, s_list in groups_dict.items():
             h_list = headers_map.get(g, [])
             h_str = " | ".join(h_list) if h_list else "默认结构"
             lines.append(f"🗂️ 组别: {g}")
             lines.append(f"  🔸 头部定义: {h_str}")
-            for s in s_list:
+            s_list_sorted = sorted(s_list, key=lambda x: self._extract_number(x["display_name"]))
+            for s in s_list_sorted:
                 status = "启用中" if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True) else "已封锁"
                 lines.append(f"    🔹 标识: {s['default_name']} | 名字: {s['display_name']} [ID: {s['id']}] ({status})")
             lines.append("================")
