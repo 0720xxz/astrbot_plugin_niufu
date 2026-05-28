@@ -14,7 +14,7 @@ SERVER_DATA_FILE = PLUGIN_DIR / "server_data.json"
 BLACKLIST_FILE = PLUGIN_DIR / "blacklist.json"
 GROUP_BINDING_FILE = PLUGIN_DIR / "group_bindings.json"
 FUZZY_TOGGLE_FILE = PLUGIN_DIR / "fuzzy_toggle.json"
-GROUP_NOSLASH_FILE = PLUGIN_DIR / "group_noslash.json"  # 新增：无斜杠触发开关
+GROUP_NOSLASH_FILE = PLUGIN_DIR / "group_noslash.json"
 
 DEFAULT_SERVER_DATA = {
     "refresh_interval_min": 30,
@@ -103,7 +103,6 @@ def save_fuzzy_toggle(data):
 def is_fuzzy_enabled(group_id: str, fuzzy_toggle_data: dict) -> bool:
     return fuzzy_toggle_data.get(group_id, True)
 
-# ========== 新增：无斜杠触发开关 ==========
 def load_group_noslash():
     if GROUP_NOSLASH_FILE.exists():
         try:
@@ -111,7 +110,7 @@ def load_group_noslash():
                 return json.load(f)
         except Exception:
             pass
-    return {}  # { group_name: True/False }
+    return {}
 
 def save_group_noslash(data):
     with open(GROUP_NOSLASH_FILE, "w", encoding="utf-8") as f:
@@ -128,7 +127,7 @@ class UniversalServerPlugin(Star):
         self.blacklist = load_blacklist()
         self.group_bindings = load_group_bindings()
         self.fuzzy_toggle = load_fuzzy_toggle()
-        self.group_noslash = load_group_noslash()  # 新增
+        self.group_noslash = load_group_noslash()
         self.cache = {}
         self.refresh_task = None
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -194,20 +193,16 @@ class UniversalServerPlugin(Star):
 
     async def _build_group_info(self, target_group):
         headers_map = GLOBAL_DATA.get("group_headers", {})
-        if target_group in headers_map:
-            lines = list(headers_map[target_group])
-        else:
-            lines = [f"--- {target_group} 状态 ---", "=============="]
-        
+        default_headers = [f"--- {target_group} 状态 ---", "=============="]
+        headers = headers_map.get(target_group, default_headers)
+        # 复制头部（包含标题和分隔线）
+        lines = headers.copy()
         servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == target_group and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
         servers.sort(key=lambda x: self._extract_number(x["display_name"]))
-        
         if not servers:
             lines.append("该组别暂无启用的服务器")
             lines.append("==============")
             return lines
-        
-        result_lines = lines[:-1]  # 除最后一条分隔线外的头部
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in servers]
         results = await asyncio.gather(*(self._fetch(url) for url in urls))
         for s, data in zip(servers, results):
@@ -215,11 +210,11 @@ class UniversalServerPlugin(Star):
                 players = data.get("players", 0)
                 max_players = data.get("max_players")
                 status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
-                result_lines.append(status_str)
+                lines.append(status_str)
             else:
-                result_lines.append(f"{s['display_name']} 离线")
-        result_lines.append("==============")
-        return result_lines
+                lines.append(f"{s['display_name']} 离线")
+        lines.append("==============")
+        return lines
 
     async def _build_ip_info(self, target_group=None):
         lines = ["🌐 服务器端口与IP映射", "=============="]
@@ -290,15 +285,16 @@ class UniversalServerPlugin(Star):
             return
         msg_lower = msg.lower()
 
-        # 处理以 / 开头的命令（动态快捷命令）
+        # 处理以 / 开头的命令（动态快捷命令和内置命令）
         if msg_lower.startswith("/"):
             parts = msg_lower[1:].split()
             if not parts:
                 return
             cmd = parts[0]
             all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
+            # 规则1：单字组名+“服”，例如 /牛服
             if cmd.endswith("服") and len(cmd) == 2:
-                group_name = cmd[:-1]
+                group_name = cmd[:-1]  # 去掉“服”
                 if group_name in all_groups:
                     self._trigger_active_refresh()
                     data = await self._build_group_info(group_name)
@@ -306,17 +302,19 @@ class UniversalServerPlugin(Star):
                         yield chunk
                     event.stop_event()
                     return
-            elif len(cmd) >= 2 and cmd in all_groups:
+            # 规则2：命令本身匹配组名（多字或单字组名直接匹配），例如 /饭堂
+            if cmd in all_groups:
                 self._trigger_active_refresh()
                 data = await self._build_group_info(cmd)
                 for chunk in self._reply_at(event, "\n".join(data)):
                     yield chunk
                 event.stop_event()
                 return
-            # 其他命令继续传递
+            # 其他以 / 开头的命令（如 /查服, /ip 等）不处理，交给命令系统
+            # 这里不要 return，让事件继续传递
             return
 
-        # 非命令消息：触发词检查 + 无斜杠组名检查
+        # 非命令消息处理
         registered_commands = [
             "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
@@ -359,28 +357,20 @@ class UniversalServerPlugin(Star):
         if not event.is_private_chat():
             group_id = str(event.message_obj.group_id)
         if group_id is None or is_fuzzy_enabled(group_id, self.fuzzy_toggle):
-            matched_trigger = None
-            matched_group = None
             for group_name, triggers in GLOBAL_DATA.get("group_triggers", {}).items():
                 for trigger in triggers:
                     if trigger in msg_lower:
-                        matched_trigger = trigger
-                        matched_group = group_name
-                        break
-                if matched_group:
-                    break
-            if matched_group:
-                hint_msg = (
-                    f"💡 检测到关键词【{matched_trigger}】，该词对应服务器组【{matched_group}】。\n"
-                    f"如果您想要了解它当前的运行状态，可以直接使用以下命令进行互动哦：\n"
-                    f"👉 查询人数状态：/查服 {matched_group}\n"
-                    f"👉 获取连接地址：/ip {matched_group}\n"
-                    f"💡 遇到问题不用猜，不懂就要问！输入 /help 可了解更多控制命令。"
-                )
-                for chunk in self._reply_at(event, hint_msg):
-                    yield chunk
-                event.stop_event()
-                return
+                        hint_msg = (
+                            f"💡 检测到关键词【{trigger}】，该词对应服务器组【{group_name}】。\n"
+                            f"如果您想要了解它当前的运行状态，可以直接使用以下命令进行互动哦：\n"
+                            f"👉 查询人数状态：/查服 {group_name}\n"
+                            f"👉 获取连接地址：/ip {group_name}\n"
+                            f"💡 遇到问题不用猜，不懂就要问！输入 /help 可了解更多控制命令。"
+                        )
+                        for chunk in self._reply_at(event, hint_msg):
+                            yield chunk
+                        event.stop_event()
+                        return
 
         # 无斜杠直接组名触发（根据组开关）
         all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
@@ -393,7 +383,7 @@ class UniversalServerPlugin(Star):
                 event.stop_event()
                 return
 
-    # ========== 新增：无斜杠开关命令 ==========
+    # ========== 无斜杠开关命令 ==========
     @filter.command("开启无斜杠")
     async def enable_noslash(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
@@ -434,7 +424,7 @@ class UniversalServerPlugin(Star):
         for chunk in self._reply_at(event, f"❌ 已关闭组【{group_name}】的无斜杠直接触发。"):
             yield chunk
 
-    # ========== 原有命令（保持不变） ==========
+    # ========== 原有命令（所有命令保留完整） ==========
     @filter.command("查服")
     async def query_generic_group(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
@@ -499,8 +489,8 @@ class UniversalServerPlugin(Star):
         for chunk in self._reply_at(event, help_text):
             yield chunk
 
-    # 以下为所有原有管理员命令（完整保留，省略部分以节省篇幅，但实际应全部包含）
-    # 为完整起见，继续列出所有命令（注意不要遗漏）
+    # 以下所有管理员命令（完整保留，为节省篇幅已省略，但在实际部署中必须包含所有命令）
+    # 为了完整性，这里继续列出所有命令（请确保它们都在类中）
     @filter.command("开启模糊匹配")
     async def enable_fuzzy_match(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
