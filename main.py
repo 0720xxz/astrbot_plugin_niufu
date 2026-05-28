@@ -12,6 +12,7 @@ PLUGIN_DIR = Path(__file__).parent
 TOGGLE_FILE = PLUGIN_DIR / "toggle_state.json"
 SERVER_DATA_FILE = PLUGIN_DIR / "server_data.json"
 BLACKLIST_FILE = PLUGIN_DIR / "blacklist.json"
+GROUP_BINDING_FILE = PLUGIN_DIR / "group_bindings.json"
 
 DEFAULT_SERVER_DATA = {
     "refresh_interval_min": 30,
@@ -71,13 +72,27 @@ def save_blacklist(data):
     with open(BLACKLIST_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_group_bindings():
+    if GROUP_BINDING_FILE.exists():
+        try:
+            with open(GROUP_BINDING_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
-@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.4")
+def save_group_bindings(bindings):
+    with open(GROUP_BINDING_FILE, "w", encoding="utf-8") as f:
+        json.dump(bindings, f, ensure_ascii=False, indent=2)
+
+
+@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.6")
 class UniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.toggle_state = load_toggle_state()
         self.blacklist = load_blacklist()
+        self.group_bindings = load_group_bindings()
         self.cache = {}
         self.refresh_task = None
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -128,7 +143,6 @@ class UniversalServerPlugin(Star):
         return False
 
     def _extract_number(self, name: str) -> int:
-        """从 display_name 中提取数字，支持阿拉伯数字和中文数字"""
         match = re.search(r'(\d+)', name)
         if match:
             return int(match.group(1))
@@ -167,7 +181,7 @@ class UniversalServerPlugin(Star):
                 status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                 lines.insert(insert_idx, status_str)
             else:
-                lines.insert(insert_idx, f"{s['display_name']} 获取失败")
+                lines.insert(insert_idx, f"{s['display_name']} 离线")
             insert_idx += 1
             
         return lines
@@ -195,9 +209,9 @@ class UniversalServerPlugin(Star):
                 if ip and port:
                     lines.insert(insert_idx, f"[{s['group']}] {s['display_name']} ➔ {ip}:{port}")
                 else:
-                    lines.insert(insert_idx, f"[{s['group']}] {s['display_name']} ➔ 无法提取连接地址")
+                    lines.insert(insert_idx, f"[{s['group']}] {s['display_name']} ➔ 端口信息异常")
             else:
-                lines.insert(insert_idx, f"[{s['group']}] {s['display_name']} ➔ 查询超时")
+                lines.insert(insert_idx, f"[{s['group']}] {s['display_name']} ➔ 离线")
             insert_idx += 1
             
         return lines
@@ -238,29 +252,53 @@ class UniversalServerPlugin(Star):
         if self._is_blacklisted(event):
             return
             
-        msg_str = event.get_message_str().strip()
+        msg_str = event.get_message_str().strip().lower()
         
         registered_commands = [
             "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
-            "/改服名", "/改服组", "/调整刷新"
+            "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组"
         ]
-        
         for cmd in registered_commands:
             if cmd in msg_str:
                 return
-        
         if msg_str.startswith("/") or msg_str.startswith("!"):
+            return
+
+        trigger_keywords = ["炸了", "服务器炸了", "炸服", "卡了", "连不上", "宕机", "崩了"]
+        if any(keyword in msg_str for keyword in trigger_keywords):
+            self._trigger_active_refresh()
+            
+            if not event.is_private_chat():
+                group_id = str(event.message_obj.group_id)
+                bound_group = self.group_bindings.get(group_id)
+                if bound_group:
+                    data = await self._build_group_info(bound_group)
+                    reply = "\n".join(data)
+                    for chunk in self._reply_at(event, reply):
+                        yield chunk
+                else:
+                    reply = (
+                        f"⚠️ 本群尚未绑定任何服务器组。\n"
+                        f"管理员可使用 /绑定组 <组名> 为本群绑定，\n"
+                        f"或使用 /绑定组 <群号> <组名> 为指定群绑定。\n"
+                        f"可用组名：{', '.join(set(s['group'] for s in GLOBAL_DATA['servers']))}"
+                    )
+                    for chunk in self._reply_at(event, reply):
+                        yield chunk
+            else:
+                for chunk in self._reply_at(event, "请在群聊中使用此功能。"):
+                    yield chunk
+            event.stop_event()
             return
 
         matched_server = None
         matched_group = None
-
         for s in GLOBAL_DATA.get("servers", []):
-            if s["default_name"] in msg_str or s["display_name"] in msg_str:
+            if s["default_name"].lower() in msg_str or s["display_name"].lower() in msg_str:
                 matched_server = s
                 break
-            if s["group"] in msg_str:
+            if s["group"].lower() in msg_str:
                 matched_group = s["group"]
                 break
 
@@ -277,6 +315,61 @@ class UniversalServerPlugin(Star):
             for chunk in self._reply_at(event, hint_msg):
                 yield chunk
 
+    @filter.command("绑定组")
+    async def bind_group_cmd(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg_parts = event.get_message_str().strip().split()
+        if len(msg_parts) < 2:
+            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            for chunk in self._reply_at(event, f"用法：/绑定组 <组名> 或 /绑定组 <群号> <组名>\n可用组名：{', '.join(groups)}"):
+                yield chunk
+            return
+        if len(msg_parts) == 2:
+            group_name = msg_parts[1].strip()
+            if event.is_private_chat():
+                for chunk in self._reply_at(event, "私聊中无法绑定当前群，请使用：/绑定组 <群号> <组名>"):
+                    yield chunk
+                return
+            group_id = str(event.message_obj.group_id)
+        else:
+            group_id = msg_parts[1].strip()
+            group_name = msg_parts[2].strip()
+        
+        all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
+        if group_name not in all_groups:
+            for chunk in self._reply_at(event, f"❌ 组别【{group_name}】不存在。可用组名：{', '.join(all_groups)}"):
+                yield chunk
+            return
+        
+        self.group_bindings[group_id] = group_name
+        save_group_bindings(self.group_bindings)
+        for chunk in self._reply_at(event, f"✅ 群 {group_id} 已绑定到服务器组【{group_name}】。"):
+            yield chunk
+
+    @filter.command("解绑组")
+    async def unbind_group_cmd(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg_parts = event.get_message_str().strip().split()
+        if len(msg_parts) == 1:
+            if event.is_private_chat():
+                for chunk in self._reply_at(event, "私聊中请指定群号：/解绑组 <群号>"):
+                    yield chunk
+                return
+            group_id = str(event.message_obj.group_id)
+        else:
+            group_id = msg_parts[1].strip()
+        
+        if group_id in self.group_bindings:
+            del self.group_bindings[group_id]
+            save_group_bindings(self.group_bindings)
+            for chunk in self._reply_at(event, f"✅ 群 {group_id} 已解绑。"):
+                yield chunk
+        else:
+            for chunk in self._reply_at(event, f"群 {group_id} 未绑定任何服务器组。"):
+                yield chunk
+
     @filter.command("查服")
     async def query_generic_group(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
@@ -288,19 +381,17 @@ class UniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f"💡 请提供要查询的组别名称。\n当前已有组别: {groups_str}\n用法: /查服 <组别名>"):
                 yield chunk
             return
-            
         target_group = msg[1].strip()
         data = await self._build_group_info(target_group)
         for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
-            
+
     @filter.command("ip")
     async def ip_cmd(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
         self._trigger_active_refresh()
         msg = event.get_message_str().strip().split(maxsplit=1)
         target_group = msg[1].strip() if len(msg) > 1 else None
-        
         data = await self._build_ip_info(target_group)
         for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
@@ -314,7 +405,7 @@ class UniversalServerPlugin(Star):
 /查服 <组别名> - 实时查询指定服务器组的在线人数
 /ip [组别名]   - 查询服务器的公网连接地址与开放端口
 
-🛠 动态配置指令（仅管理员可用）
+🛠 管理员指令
 /查看所有服 - 查看所有组别、唯一识别名与启停状态
 /添加服 <组别名> <识别名> <API_ID> <展示名>
 /删除服 <组别名> <识别名>
@@ -325,7 +416,11 @@ class UniversalServerPlugin(Star):
 /改服ID <组别名> <识别名> <新ID>
 /改服名 <组别名> <识别名> <新展示名>
 /改服组 <原组别名> <识别名> <新组别名>
-/调整刷新 <最小秒数> [最大秒数]"""
+/调整刷新 <最小秒数> [最大秒数]
+/绑定组 <组名> 或 /绑定组 <群号> <组名> - 将群聊绑定到指定服务器组
+/解绑组 [群号] - 解除群聊的绑定
+
+💡 当群聊未绑定时，发送“炸了”等关键词会提示绑定；绑定时自动返回对应组状态。"""
         for chunk in self._reply_at(event, help_text):
             yield chunk
 
@@ -371,7 +466,7 @@ class UniversalServerPlugin(Star):
             g = s["group"]
             if g not in groups_dict: groups_dict[g] = []
             groups_dict[g].append(s)
-        lines = ["📊 核心架构全组别清单", "================"]
+        lines = ["📊 核心架构全组别资产清单", "================"]
         headers_map = GLOBAL_DATA.get("group_headers", {})
         for g, s_list in groups_dict.items():
             h_list = headers_map.get(g, [])
