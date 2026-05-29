@@ -119,7 +119,8 @@ def save_group_noslash(data):
 def is_noslash_enabled(group_name: str, noslash_data: dict) -> bool:
     return noslash_data.get(group_name, False)
 
-@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.7")
+
+@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.8")
 class UniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -189,13 +190,12 @@ class UniversalServerPlugin(Star):
         for ch in reversed(name):
             if ch in chinese_num_map:
                 return chinese_num_map[ch]
-        return 0
+        return 9999
 
     async def _build_group_info(self, target_group):
         headers_map = GLOBAL_DATA.get("group_headers", {})
         default_headers = [f"--- {target_group} 状态 ---", "=============="]
         headers = headers_map.get(target_group, default_headers)
-        # 复制头部（包含标题和分隔线）
         lines = headers.copy()
         servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == target_group and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
         servers.sort(key=lambda x: self._extract_number(x["display_name"]))
@@ -221,18 +221,14 @@ class UniversalServerPlugin(Star):
         servers = GLOBAL_DATA["servers"]
         if target_group:
             servers = [s for s in servers if s["group"] == target_group]
-
         active_servers = [s for s in servers if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
         active_servers.sort(key=lambda x: self._extract_number(x["display_name"]))
-
         if not active_servers:
             lines.append("暂无启用的服务器")
             lines.append("==============")
             return lines
-
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in active_servers]
         results = await asyncio.gather(*(self._fetch(url) for url in urls))
-
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
@@ -275,57 +271,50 @@ class UniversalServerPlugin(Star):
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
 
+    ADMIN_COMMANDS = [
+        "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
+        "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
+        "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
+        "/开启无斜杠", "/关闭无斜杠"
+    ]
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
         if self._is_blacklisted(event):
             return
-
         msg = event.get_message_str().strip()
         if not msg:
             return
         msg_lower = msg.lower()
-
-        # 处理以 / 开头的命令（动态快捷命令和内置命令）
         if msg_lower.startswith("/"):
-            parts = msg_lower[1:].split()
-            if not parts:
-                return
-            cmd = parts[0]
-            all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
-            # 规则1：单字组名+“服”，例如 /牛服
-            if cmd.endswith("服") and len(cmd) == 2:
-                group_name = cmd[:-1]  # 去掉“服”
-                if group_name in all_groups:
-                    self._trigger_active_refresh()
-                    data = await self._build_group_info(group_name)
-                    for chunk in self._reply_at(event, "\n".join(data)):
-                        yield chunk
-                    event.stop_event()
+            for cmd in self.ADMIN_COMMANDS:
+                if msg_lower.startswith(cmd):
                     return
-            # 规则2：命令本身匹配组名（多字或单字组名直接匹配），例如 /饭堂
-            if cmd in all_groups:
+            if msg_lower.startswith("/牛服"):
                 self._trigger_active_refresh()
-                data = await self._build_group_info(cmd)
+                data = await self._build_group_info("牛")
                 for chunk in self._reply_at(event, "\n".join(data)):
                     yield chunk
                 event.stop_event()
                 return
-            # 其他以 / 开头的命令（如 /查服, /ip 等）不处理，交给命令系统
-            # 这里不要 return，让事件继续传递
+            if msg_lower.startswith("/鸽服"):
+                self._trigger_active_refresh()
+                data = await self._build_group_info("鸽")
+                for chunk in self._reply_at(event, "\n".join(data)):
+                    yield chunk
+                event.stop_event()
+                return
             return
-
-        # 非命令消息处理
         registered_commands = [
             "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
-            "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠"
+            "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
+            "/牛服", "/鸽服"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
                 return
-
-        # 关键词触发（炸了等）
         trigger_keywords = ["炸了", "服务器炸了", "炸服", "卡了", "连不上", "宕机", "崩了"]
         if any(keyword in msg_lower for keyword in trigger_keywords):
             self._trigger_active_refresh()
@@ -334,16 +323,10 @@ class UniversalServerPlugin(Star):
                 bound_group = self.group_bindings.get(group_id)
                 if bound_group:
                     data = await self._build_group_info(bound_group)
-                    reply = "\n".join(data)
-                    for chunk in self._reply_at(event, reply):
+                    for chunk in self._reply_at(event, "\n".join(data)):
                         yield chunk
                 else:
-                    reply = (
-                        f"⚠️ 本群尚未绑定任何服务器组。\n"
-                        f"管理员可使用 /绑定组 <组名> 为本群绑定，\n"
-                        f"或使用 /绑定组 <群号> <组名> 为指定群绑定。\n"
-                        f"可用组名：{', '.join(set(s['group'] for s in GLOBAL_DATA['servers']))}"
-                    )
+                    reply = f"⚠️ 本群尚未绑定任何服务器组。\n管理员可使用 /绑定组 <组名> 为本群绑定。\n可用组名：{', '.join(set(s['group'] for s in GLOBAL_DATA['servers']))}"
                     for chunk in self._reply_at(event, reply):
                         yield chunk
             else:
@@ -351,8 +334,6 @@ class UniversalServerPlugin(Star):
                     yield chunk
             event.stop_event()
             return
-
-        # 模糊匹配触发词（如“牛服”等）
         group_id = None
         if not event.is_private_chat():
             group_id = str(event.message_obj.group_id)
@@ -360,19 +341,11 @@ class UniversalServerPlugin(Star):
             for group_name, triggers in GLOBAL_DATA.get("group_triggers", {}).items():
                 for trigger in triggers:
                     if trigger in msg_lower:
-                        hint_msg = (
-                            f"💡 检测到关键词【{trigger}】，该词对应服务器组【{group_name}】。\n"
-                            f"如果您想要了解它当前的运行状态，可以直接使用以下命令进行互动哦：\n"
-                            f"👉 查询人数状态：/查服 {group_name}\n"
-                            f"👉 获取连接地址：/ip {group_name}\n"
-                            f"💡 遇到问题不用猜，不懂就要问！输入 /help 可了解更多控制命令。"
-                        )
+                        hint_msg = f"💡 检测到关键词【{trigger}】，对应服务器组【{group_name}】。\n👉 查询人数：/查服 {group_name}\n👉 获取地址：/ip {group_name}\n💡 输入 /help 查看更多。"
                         for chunk in self._reply_at(event, hint_msg):
                             yield chunk
                         event.stop_event()
                         return
-
-        # 无斜杠直接组名触发（根据组开关）
         all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
         for g in all_groups:
             if g in msg_lower and is_noslash_enabled(g, self.group_noslash):
@@ -383,48 +356,22 @@ class UniversalServerPlugin(Star):
                 event.stop_event()
                 return
 
-    # ========== 无斜杠开关命令 ==========
-    @filter.command("开启无斜杠")
-    async def enable_noslash(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            return
-        msg_parts = event.get_message_str().strip().split()
-        if len(msg_parts) < 2:
-            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
-            for chunk in self._reply_at(event, f"用法：/开启无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
-                yield chunk
-            return
-        group_name = msg_parts[1].strip()
-        if group_name not in set(s["group"] for s in GLOBAL_DATA["servers"]):
-            for chunk in self._reply_at(event, f"❌ 组别【{group_name}】不存在。"):
-                yield chunk
-            return
-        self.group_noslash[group_name] = True
-        save_group_noslash(self.group_noslash)
-        for chunk in self._reply_at(event, f"✅ 已开启组【{group_name}】的无斜杠直接触发（发送“{group_name}”即可查询）。"):
+    @filter.command("牛服")
+    async def cmd_niufu(self, event: AstrMessageEvent):
+        if self._is_blacklisted(event): return
+        self._trigger_active_refresh()
+        data = await self._build_group_info("牛")
+        for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
 
-    @filter.command("关闭无斜杠")
-    async def disable_noslash(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            return
-        msg_parts = event.get_message_str().strip().split()
-        if len(msg_parts) < 2:
-            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
-            for chunk in self._reply_at(event, f"用法：/关闭无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
-                yield chunk
-            return
-        group_name = msg_parts[1].strip()
-        if group_name not in set(s["group"] for s in GLOBAL_DATA["servers"]):
-            for chunk in self._reply_at(event, f"❌ 组别【{group_name}】不存在。"):
-                yield chunk
-            return
-        self.group_noslash[group_name] = False
-        save_group_noslash(self.group_noslash)
-        for chunk in self._reply_at(event, f"❌ 已关闭组【{group_name}】的无斜杠直接触发。"):
+    @filter.command("鸽服")
+    async def cmd_pigeon(self, event: AstrMessageEvent):
+        if self._is_blacklisted(event): return
+        self._trigger_active_refresh()
+        data = await self._build_group_info("鸽")
+        for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
 
-    # ========== 原有命令（所有命令保留完整） ==========
     @filter.command("查服")
     async def query_generic_group(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
@@ -457,75 +404,400 @@ class UniversalServerPlugin(Star):
         help_text = """📖 通用服务器框架使用帮助
 
 快捷查询
-/单字组名服 - 例如 /牛服 查询“牛”组（组名长度为1）
-/多字组名   - 例如 /饭堂 查询“饭堂”组（组名长度>=2）
-/查服 <组别名> - 通用查询命令
-
-管理员可开启“无斜杠直接触发”：
-/开启无斜杠 <组名> - 允许用户直接发送组名（不带/）查询
-/关闭无斜杠 <组名> - 禁止直接发送组名查询
+/牛服 - 查询“牛”组
+/鸽服 - 查询“鸽”组
+/查服 <组名> - 通用查询
 
 其他命令
-/ip [组别名]   - 查询服务器的公网连接地址与开放端口
+/ip [组名]   - 查询IP端口
 
 🛠 管理员指令
-/查看所有服 - 查看所有组别、服务器及启用状态
-/添加服 <组别名> <识别名> <API_ID> <展示名>
-/删除服 <组别名> <识别名>
-/启用端口 <所有/组别名> 或 /启用端口 <组别名> <识别名>
-/禁用端口 <所有/组别名> 或 /禁用端口 <组别名> <识别名>
-/黑名单 <添加群/删除群/添加人/删除人> <号码>
-/设置组头部文字 <组别名> <第一行|第二行|分隔符>
-/改服ID <组别名> <识别名> <新ID>
-/改服名 <组别名> <识别名> <新展示名>
-/改服组 <原组别名> <识别名> <新组别名>
-/调整刷新 <最小秒数> [最大秒数]
-/绑定组 <组名> 或 /绑定组 <群号> <组名> - 将群聊绑定到指定服务器组
-/解绑组 [群号] - 解除群聊的绑定
-/开启模糊匹配 [群号] - 开启当前群或指定群的模糊匹配（默认开启）
-/关闭模糊匹配 [群号] - 关闭当前群或指定群的模糊匹配
+/查看所有服, /添加服, /删除服, /启用端口, /禁用端口
+/黑名单, /设置组头部文字, /改服ID, /改服名, /改服组
+/调整刷新, /绑定组, /解绑组
+/开启模糊匹配 [群号], /关闭模糊匹配 [群号]
+/开启无斜杠 <组名>, /关闭无斜杠 <组名>
 
-💡 当群聊未绑定时，发送“炸了”等关键词会提示绑定；绑定时自动返回对应组状态。"""
+💡 开启无斜杠后，可直接发送组名（如“牛”）查询。"""
         for chunk in self._reply_at(event, help_text):
             yield chunk
 
-    # 以下所有管理员命令（完整保留，为节省篇幅已省略，但在实际部署中必须包含所有命令）
-    # 为了完整性，这里继续列出所有命令（请确保它们都在类中）
-    @filter.command("开启模糊匹配")
-    async def enable_fuzzy_match(self, event: AstrMessageEvent):
+    @filter.command("开启无斜杠")
+    async def enable_noslash(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        msg_parts = event.get_message_str().strip().split()
-        if len(msg_parts) == 1:
-            if event.is_private_chat():
-                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/开启模糊匹配 <群号>"):
-                    yield chunk
-                return
-            group_id = str(event.message_obj.group_id)
-        else:
-            group_id = msg_parts[1].strip()
-        self.fuzzy_toggle[group_id] = True
-        save_fuzzy_toggle(self.fuzzy_toggle)
-        for chunk in self._reply_at(event, f"✅ 群 {group_id} 已开启模糊匹配。"):
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2:
+            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            for chunk in self._reply_at(event, f"用法：/开启无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
+                yield chunk
+            return
+        group_name = parts[1].strip()
+        if group_name not in set(s["group"] for s in GLOBAL_DATA["servers"]):
+            for chunk in self._reply_at(event, f"❌ 组【{group_name}】不存在。"):
+                yield chunk
+            return
+        self.group_noslash[group_name] = True
+        save_group_noslash(self.group_noslash)
+        for chunk in self._reply_at(event, f"✅ 已开启组【{group_name}】的无斜杠直接触发。"):
             yield chunk
 
-    @filter.command("关闭模糊匹配")
-    async def disable_fuzzy_match(self, event: AstrMessageEvent):
+    @filter.command("关闭无斜杠")
+    async def disable_noslash(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        msg_parts = event.get_message_str().strip().split()
-        if len(msg_parts) == 1:
-            if event.is_private_chat():
-                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/关闭模糊匹配 <群号>"):
-                    yield chunk
-                return
-            group_id = str(event.message_obj.group_id)
-        else:
-            group_id = msg_parts[1].strip()
-        self.fuzzy_toggle[group_id] = False
-        save_fuzzy_toggle(self.fuzzy_toggle)
-        for chunk in self._reply_at(event, f"❌ 群 {group_id} 已关闭模糊匹配。"):
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2:
+            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            for chunk in self._reply_at(event, f"用法：/关闭无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
+                yield chunk
+            return
+        group_name = parts[1].strip()
+        if group_name not in set(s["group"] for s in GLOBAL_DATA["servers"]):
+            for chunk in self._reply_at(event, f"❌ 组【{group_name}】不存在。"):
+                yield chunk
+            return
+        self.group_noslash[group_name] = False
+        save_group_noslash(self.group_noslash)
+        for chunk in self._reply_at(event, f"❌ 已关闭组【{group_name}】的无斜杠直接触发。"):
             yield chunk
+
+    @filter.command("查看所有服")
+    async def list_all_servers(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        if not GLOBAL_DATA["servers"]:
+            for chunk in self._reply_at(event, "当前配置中暂无任何服务器"):
+                yield chunk
+            return
+        groups_dict = {}
+        for s in GLOBAL_DATA["servers"]:
+            g = s["group"]
+            if g not in groups_dict:
+                groups_dict[g] = []
+            groups_dict[g].append(s)
+        lines = ["📊 所有服务器列表", "================"]
+        headers_map = GLOBAL_DATA.get("group_headers", {})
+        for g, s_list in groups_dict.items():
+            h_list = headers_map.get(g, [])
+            h_str = " | ".join(h_list) if h_list else "默认结构"
+            lines.append(f"🗂️ 组别: {g}")
+            lines.append(f"  🔸 头部定义: {h_str}")
+            s_list_sorted = sorted(s_list, key=lambda x: self._extract_number(x["display_name"]))
+            for s in s_list_sorted:
+                status = "启用中" if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True) else "已封锁"
+                lines.append(f"    🔹 标识: {s['default_name']} | 名字: {s['display_name']} [ID: {s['id']}] ({status})")
+            lines.append("================")
+        for chunk in self._reply_at(event, "\n".join(lines)):
+            yield chunk
+
+    @filter.command("添加服")
+    async def add_server(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=4)
+        if len(msg) < 5:
+            for chunk in self._reply_at(event, "用法：/添加服 <组别名> <识别名> <API_ID> <展示名>"):
+                yield chunk
+            return
+        group_name, default_name, sid, display_name = msg[1], msg[2], msg[3], msg[4]
+        if any(s["default_name"] == default_name and s["group"] == group_name for s in GLOBAL_DATA["servers"]):
+            for chunk in self._reply_at(event, f"❌ 冲突：组别【{group_name}】下识别名【{default_name}】已存在"):
+                yield chunk
+            return
+        GLOBAL_DATA["servers"].append({"id": sid, "group": group_name, "default_name": default_name, "display_name": display_name})
+        if group_name not in GLOBAL_DATA["group_headers"]:
+            GLOBAL_DATA["group_headers"][group_name] = [f"--- {group_name} 状态 ---", "=============="]
+        save_server_data(GLOBAL_DATA)
+        self.toggle_state[_get_toggle_key(group_name, default_name)] = True
+        save_toggle_state(self.toggle_state)
+        await self._force_refresh_all()
+        for chunk in self._reply_at(event, f"✅ 成功添加服务器【{display_name}】到组【{group_name}】"):
+            yield chunk
+
+    @filter.command("删除服")
+    async def del_server(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=2)
+        if len(msg) < 3:
+            for chunk in self._reply_at(event, "用法：/删除服 <组别名> <识别名>"):
+                yield chunk
+            return
+        group_name, target_name = msg[1], msg[2]
+        idx = -1
+        for i, s in enumerate(GLOBAL_DATA["servers"]):
+            if s["group"] == group_name and s["default_name"] == target_name:
+                idx = i
+                break
+        if idx != -1:
+            removed = GLOBAL_DATA["servers"].pop(idx)
+            save_server_data(GLOBAL_DATA)
+            t_key = _get_toggle_key(group_name, target_name)
+            if t_key in self.toggle_state:
+                self.toggle_state.pop(t_key)
+                save_toggle_state(self.toggle_state)
+            await self._force_refresh_all()
+            for chunk in self._reply_at(event, f"🗑️ 已删除组【{group_name}】下的服务器：{removed['display_name']}"):
+                yield chunk
+        else:
+            existing_names = [s["default_name"] for s in GLOBAL_DATA["servers"] if s["group"] == group_name]
+            if existing_names:
+                names_list = "、".join(existing_names)
+                for chunk in self._reply_at(event, f"❌ 在组【{group_name}】中未找到识别名为【{target_name}】的服务器。\n当前该组下的识别名有：{names_list}"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"❌ 组【{group_name}】不存在或该组下没有服务器。"):
+                    yield chunk
+
+    @filter.command("设置组头部文字")
+    async def set_group_headers(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=2)
+        if len(msg) < 3:
+            for chunk in self._reply_at(event, "用法：/设置组头部文字 <组别名> <第一行|第二行|分隔符>"):
+                yield chunk
+            return
+        group_name, headers_str = msg[1], msg[2]
+        headers_list = [h.strip() for h in headers_str.split("|") if h.strip()]
+        if not headers_list:
+            for chunk in self._reply_at(event, "错误：格式不规范，请用 | 符号分隔"):
+                yield chunk
+            return
+        if "group_headers" not in GLOBAL_DATA:
+            GLOBAL_DATA["group_headers"] = {}
+        GLOBAL_DATA["group_headers"][group_name] = headers_list
+        save_server_data(GLOBAL_DATA)
+        await self._force_refresh_all()
+        for chunk in self._reply_at(event, f"📝 组【{group_name}】的报头渲染模板更新完毕！"):
+            yield chunk
+
+    @filter.command("改服ID")
+    async def change_server_id(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
+            for chunk in self._reply_at(event, "用法：/改服ID <组别名> <识别名> <新ID>"):
+                yield chunk
+            return
+        group_name, target_name, new_id = msg[1], msg[2], msg[3]
+        found = False
+        for s in GLOBAL_DATA["servers"]:
+            if s["group"] == group_name and s["default_name"] == target_name:
+                s["id"] = new_id
+                found = True
+                break
+        if found:
+            save_server_data(GLOBAL_DATA)
+            await self._force_refresh_all()
+            for chunk in self._reply_at(event, f"🔧 组【{group_name}】内服务器【{target_name}】的API_ID已变更为：{new_id}"):
+                yield chunk
+        else:
+            for chunk in self._reply_at(event, f"❌ 找不到该指定服务器"):
+                yield chunk
+
+    @filter.command("改服名")
+    async def change_server_display(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
+            for chunk in self._reply_at(event, "用法：/改服名 <组别名> <识别名> <新展示名>"):
+                yield chunk
+            return
+        group_name, target_name, new_display = msg[1], msg[2], msg[3]
+        found = False
+        for s in GLOBAL_DATA["servers"]:
+            if s["group"] == group_name and s["default_name"] == target_name:
+                s["display_name"] = new_display
+                found = True
+                break
+        if found:
+            save_server_data(GLOBAL_DATA)
+            await self._force_refresh_all()
+            for chunk in self._reply_at(event, f"🔧 组【{group_name}】内服务器【{target_name}】的展现别名已变更为：{new_display}"):
+                yield chunk
+        else:
+            for chunk in self._reply_at(event, f"❌ 找不到该指定服务器"):
+                yield chunk
+
+    @filter.command("改服组")
+    async def change_server_group(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=3)
+        if len(msg) < 4:
+            for chunk in self._reply_at(event, "用法：/改服组 <原组别名> <识别名> <新组别名>"):
+                yield chunk
+            return
+        old_group, target_name, new_group = msg[1], msg[2], msg[3]
+        found = False
+        for s in GLOBAL_DATA["servers"]:
+            if s["group"] == old_group and s["default_name"] == target_name:
+                old_key = _get_toggle_key(old_group, target_name)
+                s["group"] = new_group
+                new_key = _get_toggle_key(new_group, target_name)
+                self.toggle_state[new_key] = self.toggle_state.pop(old_key, True)
+                found = True
+                break
+        if found:
+            if new_group not in GLOBAL_DATA["group_headers"]:
+                GLOBAL_DATA["group_headers"][new_group] = [f"--- {new_group} 状态 ---", "=============="]
+            save_server_data(GLOBAL_DATA)
+            save_toggle_state(self.toggle_state)
+            await self._force_refresh_all()
+            for chunk in self._reply_at(event, f"📦 成功跨组迁移：服务器【{target_name}】已移入【{new_group}】"):
+                yield chunk
+        else:
+            for chunk in self._reply_at(event, f"❌ 找不到该服务器"):
+                yield chunk
+
+    @filter.command("启用端口")
+    async def enable(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split()
+        if len(msg) < 2:
+            for chunk in self._reply_at(event, "用法：/启用端口 所有/组别名 或 /启用端口 <组别名> <识别名>"):
+                yield chunk
+            return
+        if len(msg) == 2:
+            target = msg[1].strip()
+            if target == "所有":
+                for s in GLOBAL_DATA["servers"]:
+                    self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, "🔓 已恢复全局所有服务器的数据轮询"):
+                    yield chunk
+            elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
+                for s in GLOBAL_DATA["servers"]:
+                    if s["group"] == target:
+                        self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, f"🔓 已恢复组【{target}】下的所有服务器数据轮询"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"❌ 未找到匹配的组别名【{target}】"):
+                    yield chunk
+        elif len(msg) >= 3:
+            g_name, d_name = msg[1].strip(), msg[2].strip()
+            if any(s["group"] == g_name and s["default_name"] == d_name for s in GLOBAL_DATA["servers"]):
+                self.toggle_state[_get_toggle_key(g_name, d_name)] = True
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, f"🔓 已恢复组【{g_name}】下的服务器【{d_name}】数据轮询"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"❌ 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"):
+                    yield chunk
+
+    @filter.command("禁用端口")
+    async def disable(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split()
+        if len(msg) < 2:
+            for chunk in self._reply_at(event, "用法：/禁用端口 所有/组别名 或 /禁用端口 <组别名> <识别名>"):
+                yield chunk
+            return
+        if len(msg) == 2:
+            target = msg[1].strip()
+            if target == "所有":
+                for s in GLOBAL_DATA["servers"]:
+                    self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, "🔒 全局阻断：所有服务器已停止数据轮询"):
+                    yield chunk
+            elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
+                for s in GLOBAL_DATA["servers"]:
+                    if s["group"] == target:
+                        self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, f"🔒 已批量隔离组【{target}】下的所有服务器数据轮询"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"❌ 未找到匹配的组别名【{target}】"):
+                    yield chunk
+        elif len(msg) >= 3:
+            g_name, d_name = msg[1].strip(), msg[2].strip()
+            if any(s["group"] == g_name and s["default_name"] == d_name for s in GLOBAL_DATA["servers"]):
+                self.toggle_state[_get_toggle_key(g_name, d_name)] = False
+                save_toggle_state(self.toggle_state)
+                await self._force_refresh_all()
+                for chunk in self._reply_at(event, f"🔒 已隔离组【{g_name}】下的服务器【{d_name}】数据轮询"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"❌ 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"):
+                    yield chunk
+
+    @filter.command("调整刷新")
+    async def change_refresh_rate(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split()
+        if len(msg) < 2:
+            for chunk in self._reply_at(event, "用法：/调整刷新 <最小秒数> [最大秒数]"):
+                yield chunk
+            return
+        try:
+            imin = int(msg[1])
+            imax = int(msg[2]) if len(msg) > 2 else imin
+            if imin < 2 or imax < imin:
+                raise ValueError
+            GLOBAL_DATA["refresh_interval_min"] = imin
+            GLOBAL_DATA["refresh_interval_max"] = imax
+            save_server_data(GLOBAL_DATA)
+            self.current_interval = imin
+            out = f"已设定固定轮询速率：{imin}s" if imin == imax else f"已设定动态轮询区间：{imin}s - {imax}s"
+            for chunk in self._reply_at(event, out):
+                yield chunk
+        except ValueError:
+            for chunk in self._reply_at(event, "参数错误：刷新速率最低不可低于2秒"):
+                yield chunk
+
+    @filter.command("黑名单")
+    async def handle_blacklist_cmd(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split()
+        if len(msg) < 3:
+            for chunk in self._reply_at(event, "用法：/黑名单 <添加群/删除群/添加人/删除人> <号码>"):
+                yield chunk
+            return
+        subcmd, target_id = msg[1], msg[2]
+        if subcmd == "添加群":
+            if target_id not in self.blacklist["groups"]:
+                self.blacklist["groups"].append(target_id)
+                save_blacklist(self.blacklist)
+            for chunk in self._reply_at(event, f"🚫 已将群聊【{target_id}】加入黑名单"):
+                yield chunk
+        elif subcmd == "删除群":
+            if target_id in self.blacklist["groups"]:
+                self.blacklist["groups"].remove(target_id)
+                save_blacklist(self.blacklist)
+            for chunk in self._reply_at(event, f"✅ 已将群聊【{target_id}】移出黑名单"):
+                yield chunk
+        elif subcmd == "添加人":
+            if target_id not in self.blacklist["users"]:
+                self.blacklist["users"].append(target_id)
+                save_blacklist(self.blacklist)
+            for chunk in self._reply_at(event, f"🚫 已将用户【{target_id}】加入全局黑名单"):
+                yield chunk
+        elif subcmd == "删除人":
+            if target_id in self.blacklist["users"]:
+                self.blacklist["users"].remove(target_id)
+                save_blacklist(self.blacklist)
+            for chunk in self._reply_at(event, f"✅ 已将用户【{target_id}】移出黑名单"):
+                yield chunk
+        else:
+            for chunk in self._reply_at(event, "未知黑名单子命令。"):
+                yield chunk
 
     @filter.command("绑定组")
     async def bind_group_cmd(self, event: AstrMessageEvent):
@@ -579,262 +851,41 @@ class UniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f"群 {group_id} 未绑定任何服务器组。"):
                 yield chunk
 
-    @filter.command("查看所有服")
-    async def list_all_servers(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        if not GLOBAL_DATA["servers"]:
-            for chunk in self._reply_at(event, "当前配置中暂无任何服务器"): yield chunk
-            return
-        groups_dict = {}
-        for s in GLOBAL_DATA["servers"]:
-            g = s["group"]
-            if g not in groups_dict: groups_dict[g] = []
-            groups_dict[g].append(s)
-        lines = ["📊 所有服务器列表", "================"]
-        headers_map = GLOBAL_DATA.get("group_headers", {})
-        for g, s_list in groups_dict.items():
-            h_list = headers_map.get(g, [])
-            h_str = " | ".join(h_list) if h_list else "默认结构"
-            lines.append(f"🗂️ 组别: {g}")
-            lines.append(f"  🔸 头部定义: {h_str}")
-            s_list_sorted = sorted(s_list, key=lambda x: self._extract_number(x["display_name"]))
-            for s in s_list_sorted:
-                status = "启用中" if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True) else "已封锁"
-                lines.append(f"    🔹 标识: {s['default_name']} | 名字: {s['display_name']} [ID: {s['id']}] ({status})")
-            lines.append("================")
-        for chunk in self._reply_at(event, "\n".join(lines)): yield chunk
-
-    @filter.command("调整刷新")
-    async def change_refresh_rate(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split()
-        if len(msg) < 2:
-            for chunk in self._reply_at(event, "用法：/调整刷新 <最小秒数> [最大秒数]"): yield chunk
-            return
-        try:
-            imin = int(msg[1])
-            imax = int(msg[2]) if len(msg) > 2 else imin
-            if imin < 2 or imax < imin: raise ValueError
-            GLOBAL_DATA["refresh_interval_min"] = imin
-            GLOBAL_DATA["refresh_interval_max"] = imax
-            save_server_data(GLOBAL_DATA)
-            self.current_interval = imin
-            out = f"已设定固定轮询速率：{imin}s" if imin == imax else f"已设定动态轮询区间：{imin}s - {imax}s"
-            for chunk in self._reply_at(event, out): yield chunk
-        except ValueError:
-            for chunk in self._reply_at(event, "参数错误：刷新速率最低不可低于2秒"): yield chunk
-
-    @filter.command("添加服")
-    async def add_server(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split(maxsplit=4)
-        if len(msg) < 5:
-            for chunk in self._reply_at(event, "用法：/添加服 <组别名> <识别名> <API_ID> <展示名>"): yield chunk
-            return
-        group_name, default_name, sid, display_name = msg[1], msg[2], msg[3], msg[4]
-        if any(s["default_name"] == default_name and s["group"] == group_name for s in GLOBAL_DATA["servers"]):
-            for chunk in self._reply_at(event, f"❌ 冲突：组别【{group_name}】下识别名【{default_name}】已存在"): yield chunk
-            return
-        GLOBAL_DATA["servers"].append({"id": sid, "group": group_name, "default_name": default_name, "display_name": display_name})
-        if group_name not in GLOBAL_DATA["group_headers"]:
-            GLOBAL_DATA["group_headers"][group_name] = [f"--- {group_name} 状态 ---", "=============="]
-        save_server_data(GLOBAL_DATA)
-        self.toggle_state[_get_toggle_key(group_name, default_name)] = True
-        save_toggle_state(self.toggle_state)
-        await self._force_refresh_all()
-        for chunk in self._reply_at(event, f"✅ 成功添加服务器【{display_name}】到组【{group_name}】"):
-            yield chunk
-
-    @filter.command("删除服")
-    async def del_server(self, event: AstrMessageEvent):
+    @filter.command("开启模糊匹配")
+    async def enable_fuzzy_match(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        msg = event.get_message_str().strip().split(maxsplit=2)
-        if len(msg) < 3:
-            for chunk in self._reply_at(event, "用法：/删除服 <组别名> <识别名>"):
-                yield chunk
-            return
-        group_name, target_name = msg[1], msg[2]
-        idx = -1
-        for i, s in enumerate(GLOBAL_DATA["servers"]):
-            if s["group"] == group_name and s["default_name"] == target_name:
-                idx = i
-                break
-        if idx != -1:
-            removed = GLOBAL_DATA["servers"].pop(idx)
-            save_server_data(GLOBAL_DATA)
-            t_key = _get_toggle_key(group_name, target_name)
-            if t_key in self.toggle_state:
-                self.toggle_state.pop(t_key)
-                save_toggle_state(self.toggle_state)
-            await self._force_refresh_all()
-            for chunk in self._reply_at(event, f"🗑️ 已删除组【{group_name}】下的服务器：{removed['display_name']}"):
-                yield chunk
-        else:
-            existing_names = [s["default_name"] for s in GLOBAL_DATA["servers"] if s["group"] == group_name]
-            if existing_names:
-                names_list = "、".join(existing_names)
-                for chunk in self._reply_at(event, f"❌ 在组【{group_name}】中未找到识别名为【{target_name}】的服务器。\n当前该组下的识别名有：{names_list}"):
+        msg_parts = event.get_message_str().strip().split()
+        if len(msg_parts) == 1:
+            if event.is_private_chat():
+                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/开启模糊匹配 <群号>"):
                     yield chunk
-            else:
-                for chunk in self._reply_at(event, f"❌ 组【{group_name}】不存在或该组下没有服务器。"):
+                return
+            group_id = str(event.message_obj.group_id)
+        else:
+            group_id = msg_parts[1].strip()
+        self.fuzzy_toggle[group_id] = True
+        save_fuzzy_toggle(self.fuzzy_toggle)
+        for chunk in self._reply_at(event, f"✅ 群 {group_id} 已开启模糊匹配。"):
+            yield chunk
+
+    @filter.command("关闭模糊匹配")
+    async def disable_fuzzy_match(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg_parts = event.get_message_str().strip().split()
+        if len(msg_parts) == 1:
+            if event.is_private_chat():
+                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/关闭模糊匹配 <群号>"):
                     yield chunk
-
-    @filter.command("设置组头部文字")
-    async def set_group_headers(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split(maxsplit=2)
-        if len(msg) < 3:
-            for chunk in self._reply_at(event, "用法：/设置组头部文字 <组别名> <第一行|第二行|分隔符>"): yield chunk
-            return
-        group_name, headers_str = msg[1], msg[2]
-        headers_list = [h.strip() for h in headers_str.split("|") if h.strip()]
-        if not headers_list:
-            for chunk in self._reply_at(event, "错误：格式不规范，请用 | 符号分隔"): yield chunk
-            return
-        if "group_headers" not in GLOBAL_DATA:
-            GLOBAL_DATA["group_headers"] = {}
-        GLOBAL_DATA["group_headers"][group_name] = headers_list
-        save_server_data(GLOBAL_DATA)
-        await self._force_refresh_all()
-        for chunk in self._reply_at(event, f"📝 组【{group_name}】的报头渲染模板更新完毕！"): yield chunk
-
-    @filter.command("改服ID")
-    async def change_server_id(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split(maxsplit=3)
-        if len(msg) < 4:
-            for chunk in self._reply_at(event, "用法：/改服ID <组别名> <识别名> <新ID>"): yield chunk
-            return
-        group_name, target_name, new_id = msg[1], msg[2], msg[3]
-        found = False
-        for s in GLOBAL_DATA["servers"]:
-            if s["group"] == group_name and s["default_name"] == target_name:
-                s["id"] = new_id
-                found = True
-                break
-        if found:
-            save_server_data(GLOBAL_DATA)
-            await self._force_refresh_all()
-            for chunk in self._reply_at(event, f"🔧 组【{group_name}】内服务器【{target_name}】的API_ID已变更为：{new_id}"): yield chunk
+                return
+            group_id = str(event.message_obj.group_id)
         else:
-            for chunk in self._reply_at(event, f"❌ 找不到该指定服务器"): yield chunk
-
-    @filter.command("改服名")
-    async def change_server_display(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split(maxsplit=3)
-        if len(msg) < 4:
-            for chunk in self._reply_at(event, "用法：/改服名 <组别名> <识别名> <新展示名>"): yield chunk
-            return
-        group_name, target_name, new_display = msg[1], msg[2], msg[3]
-        found = False
-        for s in GLOBAL_DATA["servers"]:
-            if s["group"] == group_name and s["default_name"] == target_name:
-                s["display_name"] = new_display
-                found = True
-                break
-        if found:
-            save_server_data(GLOBAL_DATA)
-            await self._force_refresh_all()
-            for chunk in self._reply_at(event, f"🔧 组【{group_name}】内服务器【{target_name}】的展现别名已变更为：{new_display}"): yield chunk
-        else:
-            for chunk in self._reply_at(event, f"❌ 找不到该指定服务器"): yield chunk
-
-    @filter.command("改服组")
-    async def change_server_group(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split(maxsplit=3)
-        if len(msg) < 4:
-            for chunk in self._reply_at(event, "用法：/改服组 <原组别名> <识别名> <新组别名>"): yield chunk
-            return
-        old_group, target_name, new_group = msg[1], msg[2], msg[3]
-        found = False
-        for s in GLOBAL_DATA["servers"]:
-            if s["group"] == old_group and s["default_name"] == target_name:
-                old_key = _get_toggle_key(old_group, target_name)
-                s["group"] = new_group
-                new_key = _get_toggle_key(new_group, target_name)
-                self.toggle_state[new_key] = self.toggle_state.pop(old_key, True)
-                found = True
-                break
-        if found:
-            if new_group not in GLOBAL_DATA["group_headers"]:
-                GLOBAL_DATA["group_headers"][new_group] = [f"--- {new_group} 状态 ---", "=============="]
-            save_server_data(GLOBAL_DATA)
-            save_toggle_state(self.toggle_state)
-            await self._force_refresh_all()
-            for chunk in self._reply_at(event, f"📦 成功跨组迁移：服务器【{target_name}】已移入【{new_group}】"): yield chunk
-        else:
-            for chunk in self._reply_at(event, f"❌ 找不到该服务器"): yield chunk
-
-    @filter.command("启用端口")
-    async def enable(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split()
-        if len(msg) < 2:
-            for chunk in self._reply_at(event, "用法：/启用端口 所有/组别名 或 /启用端口 <组别名> <识别名>"): yield chunk
-            return
-        if len(msg) == 2:
-            target = msg[1].strip()
-            if target == "所有":
-                for s in GLOBAL_DATA["servers"]:
-                    self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, "🔓 已恢复全局所有服务器的数据轮询"): yield chunk
-            elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
-                for s in GLOBAL_DATA["servers"]:
-                    if s["group"] == target:
-                        self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, f"🔓 已恢复组【{target}】下的所有服务器数据轮询"): yield chunk
-            else:
-                for chunk in self._reply_at(event, f"❌ 未找到匹配的组别名【{target}】"): yield chunk
-        elif len(msg) >= 3:
-            g_name, d_name = msg[1].strip(), msg[2].strip()
-            if any(s["group"] == g_name and s["default_name"] == d_name for s in GLOBAL_DATA["servers"]):
-                self.toggle_state[_get_toggle_key(g_name, d_name)] = True
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, f"🔓 已恢复组【{g_name}】下的服务器【{d_name}】数据轮询"): yield chunk
-            else:
-                for chunk in self._reply_at(event, f"❌ 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"): yield chunk
-
-    @filter.command("禁用端口")
-    async def disable(self, event: AstrMessageEvent):
-        if not await self._is_admin(event): return
-        msg = event.get_message_str().strip().split()
-        if len(msg) < 2:
-            for chunk in self._reply_at(event, "用法：/禁用端口 所有/组别名 或 /禁用端口 <组别名> <识别名>"): yield chunk
-            return
-        if len(msg) == 2:
-            target = msg[1].strip()
-            if target == "所有":
-                for s in GLOBAL_DATA["servers"]:
-                    self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, "🔒 全局阻断：所有服务器已停止数据轮询"): yield chunk
-            elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
-                for s in GLOBAL_DATA["servers"]:
-                    if s["group"] == target:
-                        self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, f"🔒 已批量隔离组【{target}】下的所有服务器数据轮询"): yield chunk
-            else:
-                for chunk in self._reply_at(event, f"❌ 未找到匹配的组别名【{target}】"): yield chunk
-        elif len(msg) >= 3:
-            g_name, d_name = msg[1].strip(), msg[2].strip()
-            if any(s["group"] == g_name and s["default_name"] == d_name for s in GLOBAL_DATA["servers"]):
-                self.toggle_state[_get_toggle_key(g_name, d_name)] = False
-                save_toggle_state(self.toggle_state)
-                await self._force_refresh_all()
-                for chunk in self._reply_at(event, f"🔒 已隔离组【{g_name}】下的服务器【{d_name}】数据轮询"): yield chunk
-            else:
-                for chunk in self._reply_at(event, f"❌ 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"): yield chunk
+            group_id = msg_parts[1].strip()
+        self.fuzzy_toggle[group_id] = False
+        save_fuzzy_toggle(self.fuzzy_toggle)
+        for chunk in self._reply_at(event, f"❌ 群 {group_id} 已关闭模糊匹配。"):
+            yield chunk
 
     async def __del__(self):
         if self.session and not self.session.closed:
