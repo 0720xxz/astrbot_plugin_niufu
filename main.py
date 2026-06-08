@@ -1,6 +1,8 @@
 import json
 import asyncio
 import re
+import os
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
@@ -8,6 +10,7 @@ from astrbot.api.star import Star, Context, register
 from astrbot.api import logger
 import aiohttp
 import astrbot.api.message_components as Comp
+from PIL import Image, ImageDraw, ImageFont
 
 PLUGIN_DIR = Path(__file__).parent
 TOGGLE_FILE = PLUGIN_DIR / "toggle_state.json"
@@ -183,8 +186,7 @@ class UniversalServerPlugin(Star):
         if len(self.server_history[key]) > self.history_max:
             self.server_history[key] = self.server_history[key][-self.history_max:]
 
-    def _build_history_chart_html(self, groups_to_show: list) -> str:
-        """用 SVG 折线图渲染服务器历史数据，返回 HTML 字符串"""
+    def _build_history_chart_image(self, groups_to_show: list) -> str:
         colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899",
                    "#06B6D4", "#84CC16", "#F97316", "#6366F1"]
         server_data = []
@@ -217,64 +219,120 @@ class UniversalServerPlugin(Star):
             y_ceil = ((global_max // 20) + 1) * 20
 
         max_len = max(len(entries) for _, entries, _ in server_data)
-        total_w = min(max_len * 28, 720)
-        chart_w = total_w
+
+        title = groups_to_show[0] if groups_to_show else "全部组别"
+
+        font_name = "C:/Windows/Fonts/msyh.ttc"
+        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
+        try:
+            f_title = ImageFont.truetype(font_bold, 22)
+        except Exception:
+            f_title = ImageFont.load_default()
+        try:
+            f_sub = ImageFont.truetype(font_name, 13)
+        except Exception:
+            f_sub = ImageFont.load_default()
+        try:
+            f_name = ImageFont.truetype(font_bold, 14)
+        except Exception:
+            f_name = ImageFont.load_default()
+        try:
+            f_cur = ImageFont.truetype(font_bold, 15)
+        except Exception:
+            f_cur = ImageFont.load_default()
+        try:
+            f_peak = ImageFont.truetype(font_name, 12)
+        except Exception:
+            f_peak = ImageFont.load_default()
+        try:
+            f_axis = ImageFont.truetype(font_name, 11)
+        except Exception:
+            f_axis = ImageFont.load_default()
+
+        row_h = 155
+        title_h = 55
+        num_rows = len(server_data)
+        img_w = 820
+        img_h = title_h + num_rows * row_h + 10
+        bg = (255, 255, 255)
+        img = Image.new("RGB", (img_w, img_h), bg)
+        draw = ImageDraw.Draw(img)
+
+        draw.text((20, 12), f"{title} 在线人数趋势", fill=(34, 34, 34), font=f_title)
+        draw.text((20, 38), f"Y轴范围 0-{y_ceil}人  横轴左旧右新  最多{max_len}轮", fill=(170, 170, 170), font=f_sub)
+
+        name_w = 110
+        cur_w = 70
+        peak_w = 45
+        gap = 10
+        chart_x = name_w + gap
+        chart_w = img_w - chart_x - cur_w - peak_w - gap - 10
+
         chart_h = 150
-        pad_l, pad_r, pad_t, pad_b = 38, 8, 8, 28
+        pad_t, pad_b = 8, 28
+        pad_l, pad_r = 35, 5
         plot_w = chart_w - pad_l - pad_r
         plot_h = chart_h - pad_t - pad_b
 
-        rows_html = []
-        for name, entries, color in server_data:
+        for ri, (name, entries, color) in enumerate(server_data):
+            row_y = title_h + ri * row_h
+            tx = chart_x + pad_l
+            ty = row_y + pad_t
+
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            text_rgb = (r, g, b)
+
+            tw = draw.textbbox((0, 0), name, font=f_name)[2]
+            draw.text((chart_x - gap - tw, row_y + chart_h // 2 - 10), name, fill=(51, 51, 51), font=f_name)
+
+            for i in range(5):
+                y = ty + i * plot_h / 4
+                draw.line([(tx, y), (tx + plot_w, y)], fill=(230, 230, 230), width=1)
+            for i in range(5):
+                v = y_ceil - i * y_ceil / 4
+                y = ty + i * plot_h / 4
+                label = str(int(v))
+                lw = draw.textbbox((0, 0), label, font=f_axis)[2]
+                draw.text((tx - lw - 4, y - 7), label, fill=(153, 153, 153), font=f_axis)
+
             values = [e["players"] for e in entries]
             n = len(values)
             if n == 1:
-                xs = [pad_l + plot_w / 2]
+                xs = [tx + plot_w / 2]
             else:
-                xs = [pad_l + i * plot_w / (n - 1) for i in range(n)]
+                xs = [tx + i * plot_w / (n - 1) for i in range(n)]
 
             def y_pos(v):
-                return pad_t + plot_h - (v / y_ceil) * plot_h
+                return ty + plot_h - (v / y_ceil) * plot_h
 
-            svg = []
-            for i in range(5):
-                y = pad_t + i * plot_h / 4
-                svg.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" stroke="#eee" stroke-width="1"/>')
-            for i in range(5):
-                v = y_ceil - i * y_ceil / 4
-                y = pad_t + i * plot_h / 4
-                svg.append(f'<text x="{pad_l - 4}" y="{y + 4:.1f}" text-anchor="end" font-size="10" fill="#999">{int(v)}</text>')
-            pts = " ".join(f"{x:.1f},{y_pos(v):.1f}" for x, v in zip(xs, values))
-            svg.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+            pts = [(x, y_pos(v)) for x, v in zip(xs, values)]
+            for i in range(len(pts) - 1):
+                draw.line([pts[i], pts[i + 1]], fill=text_rgb, width=2)
+
             for x, v in zip(xs, values):
-                svg.append(f'<circle cx="{x:.1f}" cy="{y_pos(v):.1f}" r="3" fill="{color}"/>')
+                draw.ellipse([x - 3, y_pos(v) - 3, x + 3, y_pos(v) + 3], fill=text_rgb)
+
             times = [e["time"] for e in entries]
             step = max(1, n // 6)
             for i in range(0, n, step):
                 x = xs[i]
-                svg.append(f'<text x="{x:.1f}" y="{pad_t + plot_h + 18}" text-anchor="middle" font-size="10" fill="#999">{times[i]}</text>')
+                draw.text((x, ty + plot_h + 5), times[i], fill=(153, 153, 153), font=f_axis, anchor="mt")
 
-            svg_str = "".join(svg)
             latest = entries[-1]
             cur = f"{latest['players']}/{latest['max']}" if latest['max'] > 0 else str(latest['players'])
             peak = max(values)
+            cx = img_w - cur_w - peak_w - gap
+            draw.text((cx, row_y + chart_h // 2 - 10), cur, fill=text_rgb, font=f_cur)
+            px = cx + cur_w
+            draw.text((px, row_y + chart_h // 2 - 8), f"峰值{peak}", fill=(170, 170, 170), font=f_peak)
 
-            rows_html.append(f'''<div style="display:flex;align-items:center;margin:0 0 10px 0;padding:6px 0;border-bottom:1px solid #f0f0f0;">
-<div style="width:90px;text-align:right;padding-right:10px;font-size:13px;font-weight:bold;color:#333;flex-shrink:0;">{name}</div>
-<svg width="{chart_w}" height="{chart_h}" viewBox="0 0 {chart_w} {chart_h}" xmlns="http://www.w3.org/2000/svg">{svg_str}</svg>
-<div style="width:70px;text-align:center;font-size:14px;font-weight:bold;color:{color};flex-shrink:0;">{cur}</div>
-<div style="width:40px;text-align:center;font-size:11px;color:#aaa;flex-shrink:0;">峰值{peak}</div>
-</div>''')
+            if ri > 0:
+                line_y = row_y - 3
+                draw.line([(chart_x, line_y), (img_w - 15, line_y)], fill=(240, 240, 240), width=1)
 
-        title = groups_to_show[0] if groups_to_show else "全部组别"
-        html = f'''<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;}}
-</style></head><body>
-<h3 style="color:#222;margin:0 0 2px 0;">{title} 在线人数趋势</h3>
-<p style="color:#aaa;font-size:11px;margin:0 0 14px 0;">Y轴范围 0-{y_ceil}人 | 横轴左旧右新 | 最多{max_len}轮</p>
-{"".join(rows_html)}
-</body></html>'''
-        return html
+        path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_history.png")
+        img.save(path, "PNG")
+        return path
 
     def _trigger_active_refresh(self):
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -1184,28 +1242,16 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                 yield chunk
             return
 
-        html = self._build_history_chart_html(groups_to_show)
-        if not html:
+        img_path = self._build_history_chart_image(groups_to_show)
+        if not img_path:
             for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
                 yield chunk
             return
 
         try:
-            server_count = sum(1 for g in groups_to_show
-                               for s in GLOBAL_DATA["servers"] if s["group"] == g
-                               and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)
-                               and s["display_name"] in self.server_history)
-            img_h = 80 + max(server_count, 1) * 170
-            url = await self.html_render(html, {}, options={
-                "type": "png",
-                "full_page": False,
-                "clip": {"x": 0, "y": 0, "width": 860, "height": img_h},
-                "scale": "device",
-                "device_scale_factor_level": "ultra",
-            })
             if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
                 group_id = int(event.message_obj.group_id)
-                img_msg = [{"type": "image", "data": {"file": url}}]
+                img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                 resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
                 msg_id = None
                 if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
@@ -1219,7 +1265,7 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                             pass
                     asyncio.create_task(_retract_img())
             else:
-                yield event.image_result(url)
+                yield event.image_result(img_path)
         except Exception as e:
             err_msg = f"渲染历史图表失败: {e}"
             logger.warning(f"[服务器框架] {err_msg}")
