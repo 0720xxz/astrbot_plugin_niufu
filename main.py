@@ -136,6 +136,8 @@ class UniversalServerPlugin(Star):
         self.session = None
         self.error_logs: list[dict] = []
         self.error_log_max = 50
+        self.server_history: dict[str, list] = {}  # {display_name: [(time_str, players, max_players), ...]}
+        self.history_max = 30
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -166,6 +168,49 @@ class UniversalServerPlugin(Star):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
         if len(self.error_logs) > self.error_log_max:
             self.error_logs = self.error_logs[-self.error_log_max:]
+
+    def _save_history(self, display_name: str, players, max_players):
+        key = display_name
+        if key not in self.server_history:
+            self.server_history[key] = []
+        p = int(str(players).split("/")[0]) if players else 0
+        m = max_players if max_players is not None else (int(str(players).split("/")[1]) if players and "/" in str(players) else 0)
+        self.server_history[key].append({
+            "time": datetime.now().strftime("%m-%d %H:%M"),
+            "players": p,
+            "max": m
+        })
+        if len(self.server_history[key]) > self.history_max:
+            self.server_history[key] = self.server_history[key][-self.history_max:]
+
+    def _render_sparkline(self, entries: list, width: int = 20) -> str:
+        """用 ASCII 字符渲染迷你趋势图，不使用特殊符号"""
+        if not entries:
+            return "(无数据)"
+        max_players = max((e["max"] for e in entries if e["max"] > 0), default=0)
+        if max_players == 0:
+            # 所有记录 max 都为 0，用玩家数本身
+            max_val = max((e["players"] for e in entries), default=1)
+        else:
+            max_val = max_players
+        if max_val == 0:
+            max_val = 1
+        # 取最近的 width 条
+        recent = entries[-width:]
+        chars = []
+        for e in recent:
+            ratio = e["players"] / max_val
+            if ratio >= 0.85:
+                chars.append("#")
+            elif ratio >= 0.60:
+                chars.append("=")
+            elif ratio >= 0.30:
+                chars.append("-")
+            elif ratio > 0:
+                chars.append(".")
+            else:
+                chars.append("_")
+        return "".join(chars)
 
     def _trigger_active_refresh(self):
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -227,6 +272,7 @@ class UniversalServerPlugin(Star):
             if data:
                 players = data.get("players", 0)
                 max_players = data.get("max_players")
+                self._save_history(s["display_name"], players, max_players)
                 status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                 lines.append(status_str)
             else:
@@ -258,6 +304,7 @@ class UniversalServerPlugin(Star):
                 if data:
                     players = data.get("players", 0)
                     max_players = data.get("max_players")
+                    self._save_history(s["display_name"], players, max_players)
                     status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                     lines.append(status_str)
                 else:
@@ -327,7 +374,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志"
+        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -368,7 +415,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志"
+            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -472,6 +519,7 @@ class UniversalServerPlugin(Star):
 /鸽服 - 查询“鸽”组状态
 /查服 <组名> - 查询任意组状态
 /ip [组名] - 查询服务器IP与端口
+/历史 [组名] - 查看人数历史趋势图
 
 【管理员指令】（仅管理员可用）
 /查看所有服 - 查看所有组别、服务器及启用状态
@@ -493,6 +541,7 @@ class UniversalServerPlugin(Star):
 /关闭无斜杠 <组名> - 禁止直接发送组名查询
 /niulog 或 /牛服日志 - 查看最近的服务器查询错误日志
 /清除日志 - 清空错误日志记录
+/历史 [组名] - 查看服务器在线人数历史趋势图（迷你图）
 
 【智能触发】
 - 当群已绑定时，发送“炸了/卡了/连不上/宕机/崩了”自动返回该组状态
@@ -996,7 +1045,46 @@ class UniversalServerPlugin(Star):
             return
         count = len(self.error_logs)
         self.error_logs.clear()
-        for chunk in self._reply_at(event, f"✅ 已清除 {count} 条错误日志。"):
+        for chunk in self._reply_at(event, f"已清除 {count} 条错误日志。"):
+            yield chunk
+
+    @filter.command("历史")
+    async def cmd_history(self, event: AstrMessageEvent):
+        msg = event.get_message_str().strip().split(maxsplit=1)
+        target_group = msg[1].strip() if len(msg) > 1 else None
+
+        if target_group:
+            groups_to_show = [g for g in set(s["group"] for s in GLOBAL_DATA["servers"]) if target_group in g]
+            if not groups_to_show:
+                groups_to_show = [target_group]
+        else:
+            groups_to_show = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+
+        if not self.server_history:
+            for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
+                yield chunk
+            return
+
+        lines = ["服务器历史趋势 (最近20轮)", "=============================="]
+        shown = set()
+        for g in groups_to_show:
+            servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == g and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+            for s in servers:
+                name = s["display_name"]
+                if name in shown:
+                    continue
+                shown.add(name)
+                entries = self.server_history.get(name, [])
+                if entries:
+                    spark = self._render_sparkline(entries)
+                    latest = entries[-1]
+                    rate = f"{latest['players']}/{latest['max']}" if latest['max'] > 0 else str(latest['players'])
+                    lines.append(f"{name}  [{rate}] {spark}")
+                else:
+                    lines.append(f"{name}  (暂无数据)")
+        lines.append("==============================")
+        lines.append(f"图例: #高 =中 -低 .少 _空 | {len(self.server_history)}台有记录")
+        for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
 
     async def __del__(self):
