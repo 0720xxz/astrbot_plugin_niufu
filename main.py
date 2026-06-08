@@ -136,7 +136,7 @@ class UniversalServerPlugin(Star):
         self.session = None
         self.error_logs: list[dict] = []
         self.error_log_max = 50
-        self.server_history: dict[str, list] = {}  # {display_name: [(time_str, players, max_players), ...]}
+        self.server_history: dict[str, list] = {}
         self.history_max = 30
 
     async def _get_session(self):
@@ -206,7 +206,6 @@ class UniversalServerPlugin(Star):
         if not server_data:
             return ""
 
-        # 统一用所有服务器的最大玩家数作为 Y 轴上限，方便横向对比
         global_max = max((e["players"] for _, entries, _ in server_data for e in entries), default=1)
         if global_max <= 10:
             y_ceil = 10
@@ -217,7 +216,6 @@ class UniversalServerPlugin(Star):
         else:
             y_ceil = ((global_max // 20) + 1) * 20
 
-        # 找出最长的数据序列，统一 X 轴
         max_len = max(len(entries) for _, entries, _ in server_data)
         total_w = min(max_len * 28, 720)
         chart_w = total_w
@@ -239,22 +237,17 @@ class UniversalServerPlugin(Star):
                 return pad_t + plot_h - (v / y_ceil) * plot_h
 
             svg = []
-            # 水平网格线
             for i in range(5):
                 y = pad_t + i * plot_h / 4
                 svg.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" stroke="#eee" stroke-width="1"/>')
-            # Y 轴刻度
             for i in range(5):
                 v = y_ceil - i * y_ceil / 4
                 y = pad_t + i * plot_h / 4
                 svg.append(f'<text x="{pad_l - 4}" y="{y + 4:.1f}" text-anchor="end" font-size="10" fill="#999">{int(v)}</text>')
-            # 折线
             pts = " ".join(f"{x:.1f},{y_pos(v):.1f}" for x, v in zip(xs, values))
             svg.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
-            # 数据点
             for x, v in zip(xs, values):
                 svg.append(f'<circle cx="{x:.1f}" cy="{y_pos(v):.1f}" r="3" fill="{color}"/>')
-            # X 轴时间标签（每 5 个显示一个）
             times = [e["time"] for e in entries]
             step = max(1, n // 6)
             for i in range(0, n, step):
@@ -352,8 +345,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
         return lines
 
     async def _build_aggregated_info(self, groups: list):
-        """聚合多个组别到一个输出，共享第一个组的头部，组间用分隔线隔开。
-        如果只有一个逻辑组，则按服务器名前缀（去掉 #数字）拆分子区块。"""
         if not groups:
             return ["暂无可用组别", "=============="]
         headers_map = GLOBAL_DATA.get("group_headers", {})
@@ -363,7 +354,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
         lines = header_lines.copy()
         lines.append("==============")
 
-        # 收集所有服务器
         all_servers = []
         for g in groups:
             servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == g
@@ -375,7 +365,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
             lines.append("==============")
             return lines
 
-        # 如果只有一个逻辑组，按展示名前缀拆分子区块
         if len(groups) == 1:
             def _name_prefix(name: str) -> str:
                 return re.sub(r'#?\d+$', '', name).strip()
@@ -388,7 +377,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                 buckets[pf].append(s)
             sub_groups = list(buckets.values())
         else:
-            # 多组时每组一个区块
             sub_groups = [[s for s in all_servers if s["group"] == g] for g in groups]
             sub_groups = [sg for sg in sub_groups if sg]
 
@@ -463,11 +451,40 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
             pass
 
     def _reply_at(self, event, text):
+        if event.get_platform_name() == "aiocqhttp":
+            asyncio.create_task(self._send_onebot_and_retract(event, text))
+            return
         if event.is_private_chat():
             yield event.plain_result(text)
         else:
             chain = [Comp.At(qq=event.get_sender_id()), Comp.Plain(f"\n{text}")]
             yield event.chain_result(chain)
+
+    async def _send_onebot_and_retract(self, event, text: str):
+        user_id = str(event.get_sender_id())
+        msg_array = [
+            {"type": "at", "data": {"qq": user_id}},
+            {"type": "text", "data": {"text": f"\n{text}"}},
+        ]
+        try:
+            if event.is_private_chat():
+                resp = await event.bot.api.call_action("send_private_msg", user_id=int(user_id), message=msg_array)
+            else:
+                group_id = int(event.message_obj.group_id)
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=msg_array)
+            msg_id = None
+            if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
+                msg_id = resp["data"].get("message_id")
+            if msg_id:
+                async def _retract():
+                    await asyncio.sleep(30)
+                    try:
+                        await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                    except Exception:
+                        pass
+                asyncio.create_task(_retract())
+        except Exception:
+            pass
 
     ADMIN_COMMANDS = [
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
@@ -550,7 +567,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                             yield chunk
                         event.stop_event()
                         return
-        # 无斜杠触发：仅当消息不含 / 且不以注册指令关键词开头
         has_slash = "/" in msg_lower
         has_cmd = any(msg_lower.startswith(cmd.lstrip("/")) for cmd in registered_commands)
         if not has_slash and not has_cmd:
@@ -1187,31 +1203,29 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                 "scale": "device",
                 "device_scale_factor_level": "ultra",
             })
-            yield event.image_result(url)
-            # 30秒后自动撤回图片
-            self._schedule_retract(event)
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": url}}]
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                msg_id = None
+                if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
+                    msg_id = resp["data"].get("message_id")
+                if msg_id:
+                    async def _retract_img():
+                        await asyncio.sleep(30)
+                        try:
+                            await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_retract_img())
+            else:
+                yield event.image_result(url)
         except Exception as e:
             err_msg = f"渲染历史图表失败: {e}"
             logger.warning(f"[服务器框架] {err_msg}")
             self._log_error(err_msg)
             for chunk in self._reply_at(event, "渲染图表失败，请稍后重试。"):
                 yield chunk
-
-    def _schedule_retract(self, event: AstrMessageEvent):
-        """30秒后尝试撤回已发送的图片消息"""
-        async def _retract():
-            await asyncio.sleep(30)
-            try:
-                adapter = event.get_platform_adapter()
-                if adapter and hasattr(adapter, 'delete_message'):
-                    await adapter.delete_message(event)
-                elif hasattr(event, 'bot') and hasattr(event.bot, 'api'):
-                    msg_id = event.message_obj.message_id if hasattr(event, 'message_obj') else None
-                    if msg_id:
-                        await event.bot.api.call_action("delete_msg", message_id=msg_id)
-            except Exception:
-                pass
-        asyncio.create_task(_retract())
 
     async def __del__(self):
         if self.session and not self.session.closed:
