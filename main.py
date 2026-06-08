@@ -136,17 +136,23 @@ class UniversalServerPlugin(Star):
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(brotli=False)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/3.8",
+                "Accept": "application/json",
+            }
+            self.session = aiohttp.ClientSession(headers=headers)
         return self.session
 
     async def _fetch(self, url):
         try:
             session = await self._get_session()
-            async with session.get(url, timeout=5) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     return await resp.json()
-        except Exception:
-            pass
+                else:
+                    logger.warning(f"[服务器框架] API 返回非 200 状态码: {resp.status} - {url}")
+        except Exception as e:
+            logger.warning(f"[服务器框架] 获取服务器数据失败: {e} - {url}")
         return None
 
     def _trigger_active_refresh(self):
