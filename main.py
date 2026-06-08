@@ -13,12 +13,29 @@ import astrbot.api.message_components as Comp
 from PIL import Image, ImageDraw, ImageFont
 
 PLUGIN_DIR = Path(__file__).parent
-TOGGLE_FILE = PLUGIN_DIR / "toggle_state.json"
-SERVER_DATA_FILE = PLUGIN_DIR / "server_data.json"
-BLACKLIST_FILE = PLUGIN_DIR / "blacklist.json"
-GROUP_BINDING_FILE = PLUGIN_DIR / "group_bindings.json"
-FUZZY_TOGGLE_FILE = PLUGIN_DIR / "fuzzy_toggle.json"
-GROUP_NOSLASH_FILE = PLUGIN_DIR / "group_noslash.json"
+
+def _data_dir():
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+        d = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_niufu"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:
+        d = Path.home() / ".astrbot" / "data" / "plugin_data" / "astrbot_plugin_niufu"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+DATA_DIR = _data_dir()
+TOGGLE_FILE = DATA_DIR / "toggle_state.json"
+SERVER_DATA_FILE = DATA_DIR / "server_data.json"
+BLACKLIST_FILE = DATA_DIR / "blacklist.json"
+GROUP_BINDING_FILE = DATA_DIR / "group_bindings.json"
+FUZZY_TOGGLE_FILE = DATA_DIR / "fuzzy_toggle.json"
+GROUP_NOSLASH_FILE = DATA_DIR / "group_noslash.json"
+SERVER_HISTORY_FILE = DATA_DIR / "server_history.json"
+SERVER_CACHE_FILE = DATA_DIR / "server_cache.json"
+COMMAND_LOGS_FILE = DATA_DIR / "command_logs.json"
+ERROR_LOGS_FILE = DATA_DIR / "error_logs.json"
 
 DEFAULT_SERVER_DATA = {
     "refresh_interval_min": 30,
@@ -123,6 +140,58 @@ def save_group_noslash(data):
 def is_noslash_enabled(group_name: str, noslash_data: dict) -> bool:
     return noslash_data.get(group_name, False)
 
+def load_server_history():
+    if SERVER_HISTORY_FILE.exists():
+        try:
+            with open(SERVER_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_server_history(data):
+    with open(SERVER_HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_server_cache():
+    if SERVER_CACHE_FILE.exists():
+        try:
+            with open(SERVER_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_server_cache(data):
+    with open(SERVER_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_command_logs():
+    if COMMAND_LOGS_FILE.exists():
+        try:
+            with open(COMMAND_LOGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_command_logs(data):
+    with open(COMMAND_LOGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_error_logs():
+    if ERROR_LOGS_FILE.exists():
+        try:
+            with open(ERROR_LOGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_error_logs(data):
+    with open(ERROR_LOGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.8")
 class UniversalServerPlugin(Star):
@@ -137,10 +206,15 @@ class UniversalServerPlugin(Star):
         self.refresh_task = None
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         self.session = None
-        self.error_logs: list[dict] = []
+        self.error_logs: list[dict] = load_error_logs()
         self.error_log_max = 50
-        self.server_history: dict[str, list] = {}
-        self.history_max = 30
+        self.server_history: dict[str, list] = load_server_history()
+        self.history_max = 240
+        self.history_interval = 120
+        self.history_count = 240
+        self.server_cache: dict[str, dict] = load_server_cache()
+        self.cache_ttl = 60
+        self.last_history_save = datetime.now()
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -151,12 +225,25 @@ class UniversalServerPlugin(Star):
             self.session = aiohttp.ClientSession(headers=headers)
         return self.session
 
-    async def _fetch(self, url):
+    async def _fetch(self, url, sid=None):
+        now_ts = datetime.now().timestamp()
+        cache_key = sid if sid else url
+        if cache_key in self.server_cache:
+            entry = self.server_cache[cache_key]
+            if now_ts - entry.get("ts", 0) < self.cache_ttl:
+                return entry.get("data")
         try:
             session = await self._get_session()
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
-                    return await resp.json()
+                    data = await resp.json()
+                    self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                    if len(self.server_cache) > 100:
+                        stale = sorted(self.server_cache.keys(), key=lambda k: self.server_cache[k].get("ts", 0))[:-50]
+                        for k in stale:
+                            self.server_cache.pop(k, None)
+                    save_server_cache(self.server_cache)
+                    return data
                 else:
                     msg = f"API 返回非 200 状态码: {resp.status} - {url}"
                     logger.warning(f"[服务器框架] {msg}")
@@ -171,20 +258,46 @@ class UniversalServerPlugin(Star):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
         if len(self.error_logs) > self.error_log_max:
             self.error_logs = self.error_logs[-self.error_log_max:]
+        save_error_logs(self.error_logs)
 
     def _save_history(self, display_name: str, players, max_players):
+        now = datetime.now()
         key = display_name
         if key not in self.server_history:
             self.server_history[key] = []
+        if self.server_history[key]:
+            last = self.server_history[key][-1].get("raw_time", "")
+            if last:
+                try:
+                    prev = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
+                    if (now - prev).total_seconds() < self.history_interval:
+                        return
+                except Exception:
+                    pass
         p = int(str(players).split("/")[0]) if players else 0
         m = max_players if max_players is not None else (int(str(players).split("/")[1]) if players and "/" in str(players) else 0)
         self.server_history[key].append({
-            "time": datetime.now().strftime("%m-%d %H:%M"),
+            "time": now.strftime("%m-%d %H:%M"),
+            "raw_time": now.strftime("%Y-%m-%d %H:%M:%S"),
             "players": p,
             "max": m
         })
         if len(self.server_history[key]) > self.history_max:
             self.server_history[key] = self.server_history[key][-self.history_max:]
+        save_server_history(self.server_history)
+
+    def _log_command(self, event: AstrMessageEvent, cmd: str):
+        entry = {
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "cmd": cmd,
+            "sender": str(event.get_sender_id()),
+            "group": str(event.message_obj.group_id) if not event.is_private_chat() else "private",
+        }
+        logs = load_command_logs()
+        logs.append(entry)
+        if len(logs) > 2000:
+            logs = logs[-2000:]
+        save_command_logs(logs)
 
     def _build_history_chart_image(self, groups_to_show: list) -> str:
         colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899",
@@ -201,24 +314,32 @@ class UniversalServerPlugin(Star):
                     continue
                 shown.add(name)
                 entries = self.server_history.get(name, [])
-                if entries and len(entries) >= 1:
-                    server_data.append((name, entries, colors[ci % len(colors)]))
+                recent = entries[-self.history_count:] if len(entries) > self.history_count else entries
+                if recent and len(recent) >= 1:
+                    server_data.append((name, recent, colors[ci % len(colors)]))
                     ci += 1
 
         if not server_data:
             return ""
 
         global_max = max((e["players"] for _, entries, _ in server_data for e in entries), default=1)
-        if global_max <= 10:
-            y_ceil = 10
-        elif global_max <= 30:
-            y_ceil = ((global_max // 5) + 1) * 5
-        elif global_max <= 60:
-            y_ceil = ((global_max // 10) + 1) * 10
-        else:
-            y_ceil = ((global_max // 20) + 1) * 20
+        global_min = min((e["players"] for _, entries, _ in server_data for e in entries), default=0)
+        y_range = global_max - global_min
+        if y_range == 0:
+            y_range = 1
+        y_floor = max(0, global_min - int(y_range * 0.15))
+        if y_floor < 0:
+            y_floor = 0
+        y_ceil = global_max + max(int(y_range * 0.3), 1)
+        if y_ceil <= y_floor:
+            y_ceil = y_floor + 1
+        span = y_ceil - y_floor
+        if span <= 4:
+            y_ceil = y_floor + 4
+            span = 4
 
         max_len = max(len(entries) for _, entries, _ in server_data)
+        step_count = max_len
 
         title = groups_to_show[0] if groups_to_show else "全部组别"
 
@@ -252,27 +373,27 @@ class UniversalServerPlugin(Star):
         row_h = 155
         title_h = 55
         num_rows = len(server_data)
-        img_w = 820
+        per_point_w = max(22, min(28, int(720 / max(1, max_len))))
+        chart_w = max(380, per_point_w * step_count + 50)
+        name_w = 110
+        cur_w = 70
+        peak_w = 50
+        gap = 10
+        img_w = name_w + gap + chart_w + cur_w + peak_w + 25
         img_h = title_h + num_rows * row_h + 10
         bg = (255, 255, 255)
         img = Image.new("RGB", (img_w, img_h), bg)
         draw = ImageDraw.Draw(img)
 
         draw.text((20, 12), f"{title} 在线人数趋势", fill=(34, 34, 34), font=f_title)
-        draw.text((20, 38), f"Y轴范围 0-{y_ceil}人  横轴左旧右新  最多{max_len}轮", fill=(170, 170, 170), font=f_sub)
-
-        name_w = 110
-        cur_w = 70
-        peak_w = 45
-        gap = 10
-        chart_x = name_w + gap
-        chart_w = img_w - chart_x - cur_w - peak_w - gap - 10
+        draw.text((20, 38), f"Y轴 {y_floor}-{y_ceil}人  共{max_len}轮  自动缩放", fill=(170, 170, 170), font=f_sub)
 
         chart_h = 150
         pad_t, pad_b = 8, 28
         pad_l, pad_r = 35, 5
         plot_w = chart_w - pad_l - pad_r
         plot_h = chart_h - pad_t - pad_b
+        chart_x = name_w + gap
 
         for ri, (name, entries, color) in enumerate(server_data):
             row_y = title_h + ri * row_h
@@ -289,7 +410,7 @@ class UniversalServerPlugin(Star):
                 y = ty + i * plot_h / 4
                 draw.line([(tx, y), (tx + plot_w, y)], fill=(230, 230, 230), width=1)
             for i in range(5):
-                v = y_ceil - i * y_ceil / 4
+                v = y_floor + (4 - i) * span / 4
                 y = ty + i * plot_h / 4
                 label = str(int(v))
                 lw = draw.textbbox((0, 0), label, font=f_axis)[2]
@@ -303,7 +424,8 @@ class UniversalServerPlugin(Star):
                 xs = [tx + i * plot_w / (n - 1) for i in range(n)]
 
             def y_pos(v):
-                return ty + plot_h - (v / y_ceil) * plot_h
+                ratio = (v - y_floor) / span if span > 0 else 0.5
+                return ty + plot_h - ratio * plot_h
 
             pts = [(x, y_pos(v)) for x, v in zip(xs, values)]
             for i in range(len(pts) - 1):
@@ -313,7 +435,7 @@ class UniversalServerPlugin(Star):
                 draw.ellipse([x - 3, y_pos(v) - 3, x + 3, y_pos(v) + 3], fill=text_rgb)
 
             times = [e["time"] for e in entries]
-            step = max(1, n // 6)
+            step = max(1, n // 7)
             for i in range(0, n, step):
                 x = xs[i]
                 draw.text((x, ty + plot_h + 5), times[i], fill=(153, 153, 153), font=f_axis, anchor="mt")
@@ -548,7 +670,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史"
+        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -564,6 +686,7 @@ class UniversalServerPlugin(Star):
                 if msg_lower.startswith(cmd):
                     return
             if msg_lower.startswith("/牛服"):
+                self._log_command(event, "/牛服")
                 self._trigger_active_refresh()
                 niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
                 if not niufu_groups:
@@ -574,6 +697,7 @@ class UniversalServerPlugin(Star):
                 event.stop_event()
                 return
             if msg_lower.startswith("/鸽服"):
+                self._log_command(event, "/鸽服")
                 self._trigger_active_refresh()
                 ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
                 if not ge_groups:
@@ -589,13 +713,14 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史"
+            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
                 return
         trigger_keywords = ["炸了", "服务器炸了", "炸服", "卡了", "连不上", "宕机", "崩了"]
         if any(keyword in msg_lower for keyword in trigger_keywords):
+            self._log_command(event, msg)
             self._trigger_active_refresh()
             if not event.is_private_chat():
                 group_id = str(event.message_obj.group_id)
@@ -631,6 +756,7 @@ class UniversalServerPlugin(Star):
             all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
             for g in all_groups:
                 if g in msg_lower and is_noslash_enabled(g, self.group_noslash):
+                    self._log_command(event, f"无斜杠:{msg}")
                     self._trigger_active_refresh()
                     data = await self._build_group_info(g)
                     for chunk in self._reply_at(event, "\n".join(data)):
@@ -641,6 +767,7 @@ class UniversalServerPlugin(Star):
     @filter.command("牛服")
     async def cmd_niufu(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
+        self._log_command(event, "/牛服")
         self._trigger_active_refresh()
         niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
         if not niufu_groups:
@@ -652,6 +779,7 @@ class UniversalServerPlugin(Star):
     @filter.command("鸽服")
     async def cmd_pigeon(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
+        self._log_command(event, "/鸽服")
         self._trigger_active_refresh()
         ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
         if not ge_groups:
@@ -663,6 +791,7 @@ class UniversalServerPlugin(Star):
     @filter.command("查服")
     async def query_generic_group(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
+        self._log_command(event, "/查服")
         self._trigger_active_refresh()
         msg = event.get_message_str().strip().split(maxsplit=1)
         if len(msg) < 2:
@@ -719,6 +848,8 @@ class UniversalServerPlugin(Star):
 /niulog 或 /牛服日志 - 查看最近的服务器查询错误日志
 /清除日志 - 清空错误日志记录
 /历史 [组名] - 查看服务器在线人数历史趋势图（渲染为图片）
+/调整显示 <5-240> - 设置 /历史 图表显示的记录条数
+/日志 [日期] [条数] - 检索指令/错误/人数日志并渲染为图片
 
 【智能触发】
 - 当群已绑定时，发送“炸了/卡了/连不上/宕机/崩了”自动返回该组状态
@@ -1272,6 +1403,145 @@ class UniversalServerPlugin(Star):
             self._log_error(err_msg)
             for chunk in self._reply_at(event, "渲染图表失败，请稍后重试。"):
                 yield chunk
+
+    @filter.command("调整显示")
+    async def cmd_adjust_count(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        self._log_command(event, "/调整显示")
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, f"用法：/调整显示 <数字>\n当前显示 {self.history_count} 条记录"):
+                yield chunk
+            return
+        try:
+            n = int(parts[1])
+            if n < 5 or n > 240:
+                raise ValueError
+            self.history_count = n
+            for chunk in self._reply_at(event, f"历史图表显示条数已调整为 {n} 条"):
+                yield chunk
+        except ValueError:
+            for chunk in self._reply_at(event, "请输入 5-240 之间的整数。"):
+                yield chunk
+
+    @filter.command("日志")
+    async def cmd_logsearch(self, event: AstrMessageEvent):
+        self._log_command(event, "/日志")
+        parts = event.get_message_str().strip().split()
+        count = 60
+        target_date = datetime.now().strftime("%Y-%m-%d")
+        for p in parts[1:]:
+            if re.match(r'^\d{4}-\d{2}-\d{2}$', p) or re.match(r'^\d{2}-\d{2}$', p):
+                if len(p) == 5:
+                    target_date = f"{datetime.now().year}-{p}"
+                else:
+                    target_date = p
+            elif p.isdigit():
+                count = max(5, min(int(p), 500))
+        date_prefix = target_date
+        cmd_logs = load_command_logs()
+        err_logs = load_error_logs()
+        cmd_filtered = [e for e in cmd_logs if e.get("time", "").startswith(date_prefix)][-count:]
+        err_filtered = [e for e in err_logs if e.get("time", "").startswith(date_prefix)][-count:]
+        hist_data = {}
+        for name, entries in self.server_history.items():
+            recent = [e for e in entries if e.get("raw_time", e.get("time", "")).startswith(date_prefix)]
+            if recent:
+                hist_data[name] = recent[-count:]
+
+        empty = not cmd_filtered and not err_filtered and not hist_data
+        if empty:
+            for chunk in self._reply_at(event, f"{target_date} 无日志记录。"):
+                yield chunk
+            return
+
+        img_path = self._render_log_image(date_prefix, cmd_filtered, err_filtered, hist_data, count)
+        if not img_path:
+            for chunk in self._reply_at(event, "渲染日志图片失败。"):
+                yield chunk
+            return
+        try:
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                msg_id = None
+                if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
+                    msg_id = resp["data"].get("message_id")
+                if msg_id:
+                    async def _retract_log():
+                        await asyncio.sleep(30)
+                        try:
+                            await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                        except Exception:
+                            pass
+                    asyncio.create_task(_retract_log())
+            else:
+                yield event.image_result(img_path)
+        except Exception as e:
+            logger.warning(f"[服务器框架] 发送日志图片失败: {e}")
+            for chunk in self._reply_at(event, "发送日志图片失败。"):
+                yield chunk
+
+    def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count):
+        font_name = "C:/Windows/Fonts/msyh.ttc"
+        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
+        try:
+            f_title = ImageFont.truetype(font_bold, 20)
+            f_section = ImageFont.truetype(font_bold, 15)
+            f_row = ImageFont.truetype(font_name, 12)
+        except Exception:
+            f_title = f_section = f_row = ImageFont.load_default()
+
+        rows = []
+        rows.append(f"日志检索 {date_str} (最多{max_count}条)")
+
+        if cmd_logs:
+            rows.append("")
+            rows.append("--- 指令日志 ---")
+            for e in cmd_logs:
+                t = e.get("time", "")[-8:]
+                sender = e.get("sender", "")[-8:]
+                g = e.get("group", "")
+                if g == "private":
+                    g = "私"
+                else:
+                    g = g[-6:] if g else ""
+                rows.append(f"{t}  [{g}] {sender}  {e.get('cmd','')}")
+
+        if err_logs:
+            rows.append("")
+            rows.append("--- 错误日志 ---")
+            for e in err_logs:
+                t = e.get("time", "")[-8:]
+                rows.append(f"{t}  {e.get('msg','')[:100]}")
+
+        if hist_data:
+            rows.append("")
+            rows.append("--- 人数日志 ---")
+            for name, entries in hist_data.items():
+                vals = [f"{e.get('players','?')}/{e.get('max','?')}" for e in entries[-10:]]
+                recent_vals = "  ".join(vals)
+                rows.append(f"{name}: {recent_vals}")
+
+        row_h = 22
+        img_w = 780
+        img_h = len(rows) * row_h + 40
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        for i, line in enumerate(rows):
+            y = 15 + i * row_h
+            if line.startswith("日志检索"):
+                draw.text((20, y), line, fill=(34, 34, 34), font=f_title)
+            elif line.startswith("---"):
+                draw.text((20, y), line, fill=(74, 144, 226), font=f_section)
+            else:
+                draw.text((20, y), line, fill=(68, 68, 68), font=f_row)
+
+        path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_log.png")
+        img.save(path, "PNG")
+        return path
 
     async def __del__(self):
         if self.session and not self.session.closed:
