@@ -183,34 +183,105 @@ class UniversalServerPlugin(Star):
         if len(self.server_history[key]) > self.history_max:
             self.server_history[key] = self.server_history[key][-self.history_max:]
 
-    def _render_sparkline(self, entries: list, width: int = 20) -> str:
-        """用 ASCII 字符渲染迷你趋势图，不使用特殊符号"""
-        if not entries:
-            return "(无数据)"
-        max_players = max((e["max"] for e in entries if e["max"] > 0), default=0)
-        if max_players == 0:
-            # 所有记录 max 都为 0，用玩家数本身
-            max_val = max((e["players"] for e in entries), default=1)
+    def _build_history_chart_html(self, groups_to_show: list) -> str:
+        """用 SVG 折线图渲染服务器历史数据，返回 HTML 字符串"""
+        colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899",
+                   "#06B6D4", "#84CC16", "#F97316", "#6366F1"]
+        server_data = []
+        shown = set()
+        ci = 0
+        for g in groups_to_show:
+            servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == g
+                       and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+            for s in servers:
+                name = s["display_name"]
+                if name in shown:
+                    continue
+                shown.add(name)
+                entries = self.server_history.get(name, [])
+                if entries and len(entries) >= 1:
+                    server_data.append((name, entries, colors[ci % len(colors)]))
+                    ci += 1
+
+        if not server_data:
+            return ""
+
+        # 统一用所有服务器的最大玩家数作为 Y 轴上限，方便横向对比
+        global_max = max((e["players"] for _, entries, _ in server_data for e in entries), default=1)
+        if global_max <= 10:
+            y_ceil = 10
+        elif global_max <= 30:
+            y_ceil = ((global_max // 5) + 1) * 5
+        elif global_max <= 60:
+            y_ceil = ((global_max // 10) + 1) * 10
         else:
-            max_val = max_players
-        if max_val == 0:
-            max_val = 1
-        # 取最近的 width 条
-        recent = entries[-width:]
-        chars = []
-        for e in recent:
-            ratio = e["players"] / max_val
-            if ratio >= 0.85:
-                chars.append("#")
-            elif ratio >= 0.60:
-                chars.append("=")
-            elif ratio >= 0.30:
-                chars.append("-")
-            elif ratio > 0:
-                chars.append(".")
+            y_ceil = ((global_max // 20) + 1) * 20
+
+        # 找出最长的数据序列，统一 X 轴
+        max_len = max(len(entries) for _, entries, _ in server_data)
+        total_w = min(max_len * 28, 720)
+        chart_w = total_w
+        chart_h = 150
+        pad_l, pad_r, pad_t, pad_b = 38, 8, 8, 28
+        plot_w = chart_w - pad_l - pad_r
+        plot_h = chart_h - pad_t - pad_b
+
+        rows_html = []
+        for name, entries, color in server_data:
+            values = [e["players"] for e in entries]
+            n = len(values)
+            if n == 1:
+                xs = [pad_l + plot_w / 2]
             else:
-                chars.append("_")
-        return "".join(chars)
+                xs = [pad_l + i * plot_w / (n - 1) for i in range(n)]
+
+            def y_pos(v):
+                return pad_t + plot_h - (v / y_ceil) * plot_h
+
+            svg = []
+            # 水平网格线
+            for i in range(5):
+                y = pad_t + i * plot_h / 4
+                svg.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l + plot_w}" y2="{y:.1f}" stroke="#eee" stroke-width="1"/>')
+            # Y 轴刻度
+            for i in range(5):
+                v = y_ceil - i * y_ceil / 4
+                y = pad_t + i * plot_h / 4
+                svg.append(f'<text x="{pad_l - 4}" y="{y + 4:.1f}" text-anchor="end" font-size="10" fill="#999">{int(v)}</text>')
+            # 折线
+            pts = " ".join(f"{x:.1f},{y_pos(v):.1f}" for x, v in zip(xs, values))
+            svg.append(f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>')
+            # 数据点
+            for x, v in zip(xs, values):
+                svg.append(f'<circle cx="{x:.1f}" cy="{y_pos(v):.1f}" r="3" fill="{color}"/>')
+            # X 轴时间标签（每 5 个显示一个）
+            times = [e["time"] for e in entries]
+            step = max(1, n // 6)
+            for i in range(0, n, step):
+                x = xs[i]
+                svg.append(f'<text x="{x:.1f}" y="{pad_t + plot_h + 18}" text-anchor="middle" font-size="10" fill="#999">{times[i]}</text>')
+
+            svg_str = "".join(svg)
+            latest = entries[-1]
+            cur = f"{latest['players']}/{latest['max']}" if latest['max'] > 0 else str(latest['players'])
+            peak = max(values)
+
+            rows_html.append(f'''<div style="display:flex;align-items:center;margin:0 0 10px 0;padding:6px 0;border-bottom:1px solid #f0f0f0;">
+<div style="width:90px;text-align:right;padding-right:10px;font-size:13px;font-weight:bold;color:#333;flex-shrink:0;">{name}</div>
+<svg width="{chart_w}" height="{chart_h}" viewBox="0 0 {chart_w} {chart_h}" xmlns="http://www.w3.org/2000/svg">{svg_str}</svg>
+<div style="width:70px;text-align:center;font-size:14px;font-weight:bold;color:{color};flex-shrink:0;">{cur}</div>
+<div style="width:40px;text-align:center;font-size:11px;color:#aaa;flex-shrink:0;">峰值{peak}</div>
+</div>''')
+
+        title = groups_to_show[0] if groups_to_show else "全部组别"
+        html = f'''<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;}}
+</style></head><body>
+<h3 style="color:#222;margin:0 0 2px 0;">{title} 在线人数趋势</h3>
+<p style="color:#aaa;font-size:11px;margin:0 0 14px 0;">Y轴范围 0-{y_ceil}人 | 横轴左旧右新 | 最多{max_len}轮</p>
+{"".join(rows_html)}
+</body></html>'''
+        return html
 
     def _trigger_active_refresh(self):
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -519,7 +590,7 @@ class UniversalServerPlugin(Star):
 /鸽服 - 查询“鸽”组状态
 /查服 <组名> - 查询任意组状态
 /ip [组名] - 查询服务器IP与端口
-/历史 [组名] - 查看人数历史趋势图
+/历史 [组名] - 查看人数历史趋势图（折线图渲染为图片）
 
 【管理员指令】（仅管理员可用）
 /查看所有服 - 查看所有组别、服务器及启用状态
@@ -541,7 +612,7 @@ class UniversalServerPlugin(Star):
 /关闭无斜杠 <组名> - 禁止直接发送组名查询
 /niulog 或 /牛服日志 - 查看最近的服务器查询错误日志
 /清除日志 - 清空错误日志记录
-/历史 [组名] - 查看服务器在线人数历史趋势图（迷你图）
+/历史 [组名] - 查看服务器在线人数历史趋势图（渲染为图片）
 
 【智能触发】
 - 当群已绑定时，发送“炸了/卡了/连不上/宕机/崩了”自动返回该组状态
@@ -1065,27 +1136,31 @@ class UniversalServerPlugin(Star):
                 yield chunk
             return
 
-        lines = ["服务器历史趋势 (最近20轮)", "=============================="]
-        shown = set()
-        for g in groups_to_show:
-            servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == g and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
-            for s in servers:
-                name = s["display_name"]
-                if name in shown:
-                    continue
-                shown.add(name)
-                entries = self.server_history.get(name, [])
-                if entries:
-                    spark = self._render_sparkline(entries)
-                    latest = entries[-1]
-                    rate = f"{latest['players']}/{latest['max']}" if latest['max'] > 0 else str(latest['players'])
-                    lines.append(f"{name}  [{rate}] {spark}")
-                else:
-                    lines.append(f"{name}  (暂无数据)")
-        lines.append("==============================")
-        lines.append(f"图例: #高 =中 -低 .少 _空 | {len(self.server_history)}台有记录")
-        for chunk in self._reply_at(event, "\n".join(lines)):
-            yield chunk
+        html = self._build_history_chart_html(groups_to_show)
+        if not html:
+            for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
+                yield chunk
+            return
+
+        try:
+            # 动态计算图片高度：每行 ~160px + 标题 60px
+            server_count = sum(1 for g in groups_to_show
+                               for s in GLOBAL_DATA["servers"] if s["group"] == g
+                               and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)
+                               and s["display_name"] in self.server_history)
+            img_h = 80 + max(server_count, 1) * 170
+            url = await self.html_render(html, options={
+                "type": "png",
+                "full_page": False,
+                "clip": {"x": 0, "y": 0, "width": 860, "height": img_h},
+                "scale": "device",
+                "device_scale_factor_level": "ultra",
+            })
+            yield event.image_result(url)
+        except Exception as e:
+            logger.warning(f"[服务器框架] 渲染历史图表失败: {e}")
+            for chunk in self._reply_at(event, "渲染图表失败，请稍后重试。"):
+                yield chunk
 
     async def __del__(self):
         if self.session and not self.session.closed:
