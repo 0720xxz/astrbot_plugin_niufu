@@ -1181,7 +1181,7 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                                and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)
                                and s["display_name"] in self.server_history)
             img_h = 80 + max(server_count, 1) * 170
-            url = await self.html_render(html, options={
+            url = await self.html_render(html, {}, options={
                 "type": "png",
                 "full_page": False,
                 "clip": {"x": 0, "y": 0, "width": 860, "height": img_h},
