@@ -1175,7 +1175,6 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
             return
 
         try:
-            # 动态计算图片高度：每行 ~160px + 标题 60px
             server_count = sum(1 for g in groups_to_show
                                for s in GLOBAL_DATA["servers"] if s["group"] == g
                                and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)
@@ -1189,10 +1188,30 @@ body{{font-family:"Microsoft YaHei",sans-serif;margin:12px 16px;background:#fff;
                 "device_scale_factor_level": "ultra",
             })
             yield event.image_result(url)
+            # 30秒后自动撤回图片
+            self._schedule_retract(event)
         except Exception as e:
-            logger.warning(f"[服务器框架] 渲染历史图表失败: {e}")
+            err_msg = f"渲染历史图表失败: {e}"
+            logger.warning(f"[服务器框架] {err_msg}")
+            self._log_error(err_msg)
             for chunk in self._reply_at(event, "渲染图表失败，请稍后重试。"):
                 yield chunk
+
+    def _schedule_retract(self, event: AstrMessageEvent):
+        """30秒后尝试撤回已发送的图片消息"""
+        async def _retract():
+            await asyncio.sleep(30)
+            try:
+                adapter = event.get_platform_adapter()
+                if adapter and hasattr(adapter, 'delete_message'):
+                    await adapter.delete_message(event)
+                elif hasattr(event, 'bot') and hasattr(event.bot, 'api'):
+                    msg_id = event.message_obj.message_id if hasattr(event, 'message_obj') else None
+                    if msg_id:
+                        await event.bot.api.call_action("delete_msg", message_id=msg_id)
+            except Exception:
+                pass
+        asyncio.create_task(_retract())
 
     async def __del__(self):
         if self.session and not self.session.closed:
