@@ -234,6 +234,40 @@ class UniversalServerPlugin(Star):
         lines.append("==============")
         return lines
 
+    async def _build_aggregated_info(self, groups: list):
+        """聚合多个组别到一个输出，共享第一个组的头部，组间用分隔线隔开"""
+        if not groups:
+            return ["暂无可用组别", "=============="]
+        headers_map = GLOBAL_DATA.get("group_headers", {})
+        main_group = groups[0]
+        header = headers_map.get(main_group, [f"--- {main_group} 状态 ---", "=============="])
+        # 取头部的前 N-1 行（去掉末尾分隔线），然后手动加分隔线
+        header_lines = header[:-1] if len(header) > 1 and header[-1].startswith("=") else header
+        lines = header_lines.copy()
+        lines.append("==============")
+        all_empty = True
+        for g in groups:
+            servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == g and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+            servers.sort(key=lambda x: self._extract_number(x["display_name"]))
+            if not servers:
+                continue
+            all_empty = False
+            urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in servers]
+            results = await asyncio.gather(*(self._fetch(url) for url in urls))
+            for s, data in zip(servers, results):
+                if data:
+                    players = data.get("players", 0)
+                    max_players = data.get("max_players")
+                    status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
+                    lines.append(status_str)
+                else:
+                    lines.append(f"{s['display_name']} 离线")
+            lines.append("==============")
+        if all_empty:
+            lines.append("该组别暂无启用的服务器")
+            lines.append("==============")
+        return lines
+
     async def _build_ip_info(self, target_group=None):
         lines = ["🌐 服务器端口与IP映射", "=============="]
         servers = GLOBAL_DATA["servers"]
@@ -310,14 +344,20 @@ class UniversalServerPlugin(Star):
                     return
             if msg_lower.startswith("/牛服"):
                 self._trigger_active_refresh()
-                data = await self._build_group_info("牛")
+                niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
+                if not niufu_groups:
+                    niufu_groups = ["牛"]
+                data = await self._build_aggregated_info(niufu_groups)
                 for chunk in self._reply_at(event, "\n".join(data)):
                     yield chunk
                 event.stop_event()
                 return
             if msg_lower.startswith("/鸽服"):
                 self._trigger_active_refresh()
-                data = await self._build_group_info("鸽")
+                ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
+                if not ge_groups:
+                    ge_groups = ["鸽"]
+                data = await self._build_aggregated_info(ge_groups)
                 for chunk in self._reply_at(event, "\n".join(data)):
                     yield chunk
                 event.stop_event()
@@ -378,7 +418,10 @@ class UniversalServerPlugin(Star):
     async def cmd_niufu(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
         self._trigger_active_refresh()
-        data = await self._build_group_info("牛")
+        niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
+        if not niufu_groups:
+            niufu_groups = ["牛"]
+        data = await self._build_aggregated_info(niufu_groups)
         for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
 
@@ -386,7 +429,10 @@ class UniversalServerPlugin(Star):
     async def cmd_pigeon(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
         self._trigger_active_refresh()
-        data = await self._build_group_info("鸽")
+        ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
+        if not ge_groups:
+            ge_groups = ["鸽"]
+        data = await self._build_aggregated_info(ge_groups)
         for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
 
