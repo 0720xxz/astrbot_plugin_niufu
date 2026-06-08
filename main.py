@@ -2,6 +2,7 @@ import json
 import asyncio
 import re
 from pathlib import Path
+from datetime import datetime
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Star, Context, register
 from astrbot.api import logger
@@ -133,6 +134,8 @@ class UniversalServerPlugin(Star):
         self.refresh_task = None
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         self.session = None
+        self.error_logs: list[dict] = []
+        self.error_log_max = 50
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -150,10 +153,19 @@ class UniversalServerPlugin(Star):
                 if resp.status == 200:
                     return await resp.json()
                 else:
-                    logger.warning(f"[服务器框架] API 返回非 200 状态码: {resp.status} - {url}")
+                    msg = f"API 返回非 200 状态码: {resp.status} - {url}"
+                    logger.warning(f"[服务器框架] {msg}")
+                    self._log_error(msg)
         except Exception as e:
-            logger.warning(f"[服务器框架] 获取服务器数据失败: {e} - {url}")
+            msg = f"获取服务器数据失败: {e} - {url}"
+            logger.warning(f"[服务器框架] {msg}")
+            self._log_error(msg)
         return None
+
+    def _log_error(self, msg: str):
+        self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
+        if len(self.error_logs) > self.error_log_max:
+            self.error_logs = self.error_logs[-self.error_log_max:]
 
     def _trigger_active_refresh(self):
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
@@ -281,7 +293,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠"
+        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -316,7 +328,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服"
+            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -433,6 +445,8 @@ class UniversalServerPlugin(Star):
 /关闭模糊匹配 [群号] - 关闭触发词提示
 /开启无斜杠 <组名> - 允许直接发送组名（不带/）查询
 /关闭无斜杠 <组名> - 禁止直接发送组名查询
+/niulog 或 /牛服日志 - 查看最近的服务器查询错误日志
+/清除日志 - 清空错误日志记录
 
 【智能触发】
 - 当群已绑定时，发送“炸了/卡了/连不上/宕机/崩了”自动返回该组状态
@@ -907,6 +921,36 @@ class UniversalServerPlugin(Star):
         self.fuzzy_toggle[group_id] = False
         save_fuzzy_toggle(self.fuzzy_toggle)
         for chunk in self._reply_at(event, f"❌ 群 {group_id} 已关闭模糊匹配。"):
+            yield chunk
+
+    @filter.command("niulog")
+    async def cmd_niulog(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        if not self.error_logs:
+            for chunk in self._reply_at(event, "📋 暂无错误日志，一切正常。"):
+                yield chunk
+            return
+        lines = ["📋 服务器查询错误日志", "================"]
+        for entry in self.error_logs[-20:]:
+            lines.append(f"[{entry['time']}] {entry['msg']}")
+        lines.append("================")
+        lines.append(f"共 {len(self.error_logs)} 条记录，显示最近 20 条 | /清除日志 清空")
+        for chunk in self._reply_at(event, "\n".join(lines)):
+            yield chunk
+
+    @filter.command("牛服日志")
+    async def cmd_niulog_cn(self, event: AstrMessageEvent):
+        async for chunk in self.cmd_niulog(event):
+            yield chunk
+
+    @filter.command("清除日志")
+    async def cmd_clear_logs(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        count = len(self.error_logs)
+        self.error_logs.clear()
+        for chunk in self._reply_at(event, f"✅ 已清除 {count} 条错误日志。"):
             yield chunk
 
     async def __del__(self):
