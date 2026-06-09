@@ -680,6 +680,22 @@ class UniversalServerPlugin(Star):
             if prev > 20 and p < prev * 0.5:
                 self._push_alert(grp, name, "人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过50%")
             self.last_player_counts[name] = p
+        self._update_adaptive_interval()
+
+    def _update_adaptive_interval(self):
+        if not self.last_player_counts:
+            return
+        total_players = sum(self.last_player_counts.values())
+        count = len(self.last_player_counts)
+        avg = total_players / count if count > 0 else 0
+        if avg >= 40:
+            self.history_interval, self.cache_ttl = 60, 30
+        elif avg >= 20:
+            self.history_interval, self.cache_ttl = 120, 60
+        elif avg >= 5:
+            self.history_interval, self.cache_ttl = 180, 90
+        else:
+            self.history_interval, self.cache_ttl = 300, 150
 
     def _push_alert(self, group_name, name, alert_type, msg):
         key = f"{name}::{alert_type}"
@@ -797,17 +813,21 @@ class UniversalServerPlugin(Star):
         img_h = 60 + len(server_data) * row_h + 10
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
         draw = ImageDraw.Draw(img)
+        col1, col2, col3, col4, col5 = 20, 200, 290, 370, 450
         draw.text((20, 12), f"{group_name} {period}统计 {now.strftime('%m-%d %H:%M')}", fill=(34, 34, 34), font=f_title)
-        header = f"{'服务器':<20}{'当前':>10}{'峰值':>8}{'低谷':>8}{'均值':>8}"
-        draw.text((20, 42), header, fill=(100, 100, 100), font=f_row)
+        draw.text((col1, 42), "服务器", fill=(100, 100, 100), font=f_row)
+        draw.text((col2, 42), "当前", fill=(100, 100, 100), font=f_row)
+        draw.text((col3, 42), "峰值", fill=(100, 100, 100), font=f_row)
+        draw.text((col4, 42), "低谷", fill=(100, 100, 100), font=f_row)
+        draw.text((col5, 42), "均值", fill=(100, 100, 100), font=f_row)
         for i, (name, _, color, peak, low, avg, cur) in enumerate(server_data):
             y = 65 + i * row_h
             r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-            draw.text((20, y), name, fill=(51, 51, 51), font=f_row)
-            draw.text((220, y), cur, fill=(r, g, b), font=f_row)
-            draw.text((310, y), str(peak), fill=(51, 51, 51), font=f_row)
-            draw.text((390, y), str(low), fill=(51, 51, 51), font=f_row)
-            draw.text((470, y), str(avg), fill=(r, g, b), font=f_row)
+            draw.text((col1, y), name, fill=(51, 51, 51), font=f_row)
+            draw.text((col2, y), cur, fill=(r, g, b), font=f_row)
+            draw.text((col3, y), str(peak), fill=(51, 51, 51), font=f_row)
+            draw.text((col4, y), str(low), fill=(51, 51, 51), font=f_row)
+            draw.text((col5, y), str(avg), fill=(r, g, b), font=f_row)
         path = os.path.join(tempfile.gettempdir(), f"astrbot_stats_{group_name}.png")
         img.save(path, "PNG")
         return path
