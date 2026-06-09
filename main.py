@@ -656,18 +656,26 @@ class UniversalServerPlugin(Star):
                 group_id = int(event.message_obj.group_id)
                 resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=msg_array)
             msg_id = None
-            if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
-                msg_id = resp["data"].get("message_id")
-            if msg_id:
+            if isinstance(resp, dict):
+                data = resp.get("data") or resp
+                if isinstance(data, dict):
+                    msg_id = data.get("message_id")
+                elif isinstance(data, int):
+                    msg_id = data
+            if msg_id is None and isinstance(resp, dict):
+                msg_id = resp.get("message_id")
+            if msg_id is not None:
+                msg_id = int(msg_id)
+                bot = event.bot
                 async def _retract():
                     await asyncio.sleep(30)
                     try:
-                        await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                        await bot.api.call_action("delete_msg", message_id=msg_id)
                     except Exception:
                         pass
                 asyncio.create_task(_retract())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[服务器框架] OneBot发送/撤回失败: {e}")
 
     ADMIN_COMMANDS = [
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
@@ -1393,10 +1401,12 @@ class UniversalServerPlugin(Star):
                 if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
                     msg_id = resp["data"].get("message_id")
                 if msg_id:
+                    msg_id = int(msg_id) if msg_id is not None else None
+                    bot = event.bot
                     async def _retract_img():
                         await asyncio.sleep(30)
                         try:
-                            await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                            await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
                             pass
                     asyncio.create_task(_retract_img())
@@ -1474,11 +1484,13 @@ class UniversalServerPlugin(Star):
                 msg_id = None
                 if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
                     msg_id = resp["data"].get("message_id")
-                if msg_id:
+                if msg_id is not None:
+                    msg_id = int(msg_id)
+                    bot = event.bot
                     async def _retract_log():
                         await asyncio.sleep(30)
                         try:
-                            await event.bot.api.call_action("delete_msg", message_id=msg_id)
+                            await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
                             pass
                     asyncio.create_task(_retract_log())
