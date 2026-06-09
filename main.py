@@ -222,6 +222,7 @@ class UniversalServerPlugin(Star):
         self.alert_task = None
         self.report_task = None
         self._bot = None
+        self.retract_seconds = GLOBAL_DATA.get("retract_seconds", 30)
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -846,7 +847,7 @@ class UniversalServerPlugin(Star):
                 msg_id = int(msg_id)
                 bot = event.bot
                 async def _retract():
-                    await asyncio.sleep(30)
+                    await asyncio.sleep(self.retract_seconds)
                     try:
                         await bot.api.call_action("delete_msg", message_id=msg_id)
                     except Exception:
@@ -859,7 +860,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/撤回时间", "/tg设置", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -905,7 +906,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/撤回时间", "/tg设置", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -1585,7 +1586,7 @@ class UniversalServerPlugin(Star):
                     msg_id = int(msg_id) if msg_id is not None else None
                     bot = event.bot
                     async def _retract_img():
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(self.retract_seconds)
                         try:
                             await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
@@ -1656,7 +1657,7 @@ class UniversalServerPlugin(Star):
                         msg_id = int(msg_id)
                         bot = event.bot
                         async def _retract_s():
-                            await asyncio.sleep(30)
+                            await asyncio.sleep(self.retract_seconds)
                             try:
                                 await bot.api.call_action("delete_msg", message_id=msg_id)
                             except Exception:
@@ -1717,7 +1718,7 @@ class UniversalServerPlugin(Star):
                     msg_id = int(msg_id)
                     bot = event.bot
                     async def _retract_log():
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(self.retract_seconds)
                         try:
                             await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
@@ -1788,6 +1789,53 @@ class UniversalServerPlugin(Star):
         path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_log.png")
         img.save(path, "PNG")
         return path
+
+    @filter.command("撤回时间")
+    async def cmd_retract_time(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, f"用法：/撤回时间 <10-300>\n当前撤回时间：{self.retract_seconds}秒"):
+                yield chunk
+            return
+        try:
+            t = int(parts[1])
+            if t < 10 or t > 300:
+                raise ValueError
+            self.retract_seconds = t
+            GLOBAL_DATA["retract_seconds"] = t
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, f"消息撤回时间已设为 {t} 秒"):
+                yield chunk
+        except ValueError:
+            for chunk in self._reply_at(event, "请输入 10-300 之间的整数。"):
+                yield chunk
+
+    @filter.command("tg设置")
+    async def cmd_tg_token(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split(maxsplit=1)
+        if len(parts) < 2:
+            token = GLOBAL_DATA.get("telegram_bot_token", "") or "(未设置)"
+            chat = GLOBAL_DATA.get("telegram_chat_id", "") or "(未设置)"
+            mask = token[:8] + "***" if token != "(未设置)" else token
+            for chunk in self._reply_at(event, f"用法：/tg设置 <token>\n/tg设置chat <chat_id>\n当前Token: {mask}\n当前Chat: {chat}"):
+                yield chunk
+            return
+        arg = parts[1].strip()
+        if arg.startswith("chat "):
+            chat_id = arg[5:].strip()
+            GLOBAL_DATA["telegram_chat_id"] = chat_id
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, f"Telegram Chat ID 已设为 {chat_id}"):
+                yield chunk
+        else:
+            GLOBAL_DATA["telegram_bot_token"] = arg
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, f"Telegram Bot Token 已设置"):
+                yield chunk
 
     async def __del__(self):
         if self.session and not self.session.closed:
