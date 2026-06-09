@@ -958,7 +958,7 @@ class UniversalServerPlugin(Star):
                     return
 
     @filter.command("牛服")
-    async def cmd_niufu(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_niufu(self, event: AstrMessageEvent, *_, **_):
         if self._is_blacklisted(event): return
         self._log_command(event, "/牛服")
         self._trigger_active_refresh()
@@ -970,7 +970,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("鸽服")
-    async def cmd_pigeon(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_pigeon(self, event: AstrMessageEvent, *_, **_):
         if self._is_blacklisted(event): return
         self._log_command(event, "/鸽服")
         self._trigger_active_refresh()
@@ -982,7 +982,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("查服")
-    async def query_generic_group(self, event: AstrMessageEvent, *args, **kwargs):
+    async def query_generic_group(self, event: AstrMessageEvent, *_, **_):
         if self._is_blacklisted(event): return
         self._log_command(event, "/查服")
         self._trigger_active_refresh()
@@ -999,7 +999,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("ip")
-    async def ip_cmd(self, event: AstrMessageEvent, *args, **kwargs):
+    async def ip_cmd(self, event: AstrMessageEvent, *_, **_):
         if self._is_blacklisted(event): return
         self._trigger_active_refresh()
         msg = event.get_message_str().strip().split(maxsplit=1)
@@ -1009,7 +1009,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("help")
-    async def help_cmd(self, event: AstrMessageEvent, *args, **kwargs):
+    async def help_cmd(self, event: AstrMessageEvent, *_, **_):
         if self._is_blacklisted(event): return
         help_text = """ 通用服务器框架使用帮助
 
@@ -1055,7 +1055,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("开启无斜杠")
-    async def enable_noslash(self, event: AstrMessageEvent, *args, **kwargs):
+    async def enable_noslash(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split()
@@ -1075,7 +1075,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("关闭无斜杠")
-    async def disable_noslash(self, event: AstrMessageEvent, *args, **kwargs):
+    async def disable_noslash(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split()
@@ -1095,7 +1095,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("查看所有服")
-    async def list_all_servers(self, event: AstrMessageEvent, *args, **kwargs):
+    async def list_all_servers(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         if not GLOBAL_DATA["servers"]:
@@ -1124,7 +1124,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("添加服")
-    async def add_server(self, event: AstrMessageEvent, *args, **kwargs):
+    async def add_server(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=4)
@@ -1148,7 +1148,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("删除服")
-    async def del_server(self, event: AstrMessageEvent, *args, **kwargs):
+    async def del_server(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=2)
@@ -1183,7 +1183,7 @@ class UniversalServerPlugin(Star):
                     yield chunk
 
     @filter.command("设置组头部文字")
-    async def set_group_headers(self, event: AstrMessageEvent, *args, **kwargs):
+    async def set_group_headers(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=2)
@@ -1206,7 +1206,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("改服ID")
-    async def change_server_id(self, event: AstrMessageEvent, *args, **kwargs):
+    async def change_server_id(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=3)
@@ -1231,7 +1231,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("改服名")
-    async def change_server_display(self, event: AstrMessageEvent, *args, **kwargs):
+    async def change_server_display(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=3)
@@ -1256,7 +1256,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("改服组")
-    async def change_server_group(self, event: AstrMessageEvent, *args, **kwargs):
+    async def change_server_group(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split(maxsplit=3)
@@ -1287,7 +1287,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("启用端口")
-    async def enable(self, event: AstrMessageEvent, *args, **kwargs):
+    async def enable(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split()
@@ -1328,7 +1328,7 @@ class UniversalServerPlugin(Star):
                     yield chunk
 
     @filter.command("禁用端口")
-    async def disable(self, event: AstrMessageEvent, *args, **kwargs):
+    async def disable(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split()
@@ -1369,7 +1369,7 @@ class UniversalServerPlugin(Star):
                     yield chunk
 
     @filter.command("调整刷新")
-    async def change_refresh_rate(self, event: AstrMessageEvent, *args, **kwargs):
+    async def change_refresh_rate(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split()
@@ -1394,7 +1394,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("黑名单")
-    async def handle_blacklist_cmd(self, event: AstrMessageEvent, *args, **kwargs):
+    async def handle_blacklist_cmd(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg = event.get_message_str().strip().split()
@@ -1432,7 +1432,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("绑定组")
-    async def bind_group_cmd(self, event: AstrMessageEvent, *args, **kwargs):
+    async def bind_group_cmd(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg_parts = event.get_message_str().strip().split()
@@ -1462,7 +1462,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("解绑组")
-    async def unbind_group_cmd(self, event: AstrMessageEvent, *args, **kwargs):
+    async def unbind_group_cmd(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg_parts = event.get_message_str().strip().split()
@@ -1484,7 +1484,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("开启模糊匹配")
-    async def enable_fuzzy_match(self, event: AstrMessageEvent, *args, **kwargs):
+    async def enable_fuzzy_match(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg_parts = event.get_message_str().strip().split()
@@ -1502,7 +1502,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("关闭模糊匹配")
-    async def disable_fuzzy_match(self, event: AstrMessageEvent, *args, **kwargs):
+    async def disable_fuzzy_match(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         msg_parts = event.get_message_str().strip().split()
@@ -1520,7 +1520,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("niulog")
-    async def cmd_niulog(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_niulog(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         if not self.error_logs:
@@ -1536,12 +1536,12 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("牛服日志")
-    async def cmd_niulog_cn(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_niulog_cn(self, event: AstrMessageEvent, *_, **_):
         async for chunk in self.cmd_niulog(event):
             yield chunk
 
     @filter.command("清除日志")
-    async def cmd_clear_logs(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_clear_logs(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         count = len(self.error_logs)
@@ -1550,7 +1550,7 @@ class UniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("历史")
-    async def cmd_history(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_history(self, event: AstrMessageEvent, *_, **_):
         self._log_command(event, "/历史")
         parts = event.get_message_str().strip().split(maxsplit=2)
         target_group = parts[1].strip() if len(parts) > 1 else None
@@ -1602,7 +1602,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("调整显示")
-    async def cmd_adjust_count(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_adjust_count(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         self._log_command(event, "/调整显示")
@@ -1623,7 +1623,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("统计")
-    async def cmd_stats(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_stats(self, event: AstrMessageEvent, *_, **_):
         self._log_command(event, "/统计")
         parts = event.get_message_str().strip().split()
         period = "一天"
@@ -1671,7 +1671,7 @@ class UniversalServerPlugin(Star):
                     yield chunk
 
     @filter.command("日志")
-    async def cmd_logsearch(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_logsearch(self, event: AstrMessageEvent, *_, **_):
         self._log_command(event, "/日志")
         parts = event.get_message_str().strip().split()
         count = 60
@@ -1791,7 +1791,7 @@ class UniversalServerPlugin(Star):
         return path
 
     @filter.command("撤回时间")
-    async def cmd_retract_time(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_retract_time(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split()
@@ -1813,7 +1813,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("tg设置")
-    async def cmd_tg_token(self, event: AstrMessageEvent, *args, **kwargs):
+    async def cmd_tg_token(self, event: AstrMessageEvent, *_, **_):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split(maxsplit=1)
