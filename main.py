@@ -894,7 +894,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/撤回时间", "/tg设置", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -940,7 +940,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/撤回时间", "/tg设置", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -2052,6 +2052,44 @@ class UniversalServerPlugin(Star):
                 await sess.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
         except Exception:
             pass
+
+    @filter.command("debug")
+    async def cmd_debug(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        results = ["[DEBUG] 指令自检开始", "================"]
+        tests = [
+            ("/牛服", lambda: self._build_aggregated_info(list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]])) or ["牛"])),
+            ("/查服", lambda: self._build_group_info(list(set(s["group"] for s in GLOBAL_DATA["servers"]))[0])),
+            ("/ip", lambda: self._build_ip_info()),
+            ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, list(set(s["group"] for s in GLOBAL_DATA["servers"])))),
+            ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, list(set(s["group"] for s in GLOBAL_DATA["servers"]))[0], "一天")),
+            ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), load_command_logs()[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
+            ("/niulog", lambda: self.error_logs),
+            ("缓存", lambda: self.server_cache),
+            ("历史数据", lambda: self.server_history),
+            ("绑定", lambda: self.group_bindings),
+            ("告警冷却", lambda: self.alert_cooldown),
+        ]
+        for name, fn in tests:
+            try:
+                result = await fn() if asyncio.iscoroutinefunction(fn) else fn()
+                status = "OK" if result else "空"
+                if isinstance(result, list):
+                    status = f"OK({len(result)}行)"
+                elif isinstance(result, dict):
+                    status = f"OK({len(result)}条)"
+                elif isinstance(result, str) and result:
+                    status = "OK(图片)"
+                results.append(f"{name}: {status}")
+            except Exception as e:
+                results.append(f"{name}: 失败({e})")
+        results.append("================")
+        results.append(f"服务器: {len(GLOBAL_DATA['servers'])}台 | 组别: {len(set(s['group'] for s in GLOBAL_DATA['servers']))}个")
+        results.append(f"历史: {len(self.server_history)}台 | 缓存: {len(self.server_cache)}条 | 错误: {len(self.error_logs)}条")
+        results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s")
+        for chunk in self._reply_at(event, "\n".join(results)):
+            yield chunk
 
     async def __del__(self):
         if self.session and not self.session.closed:
