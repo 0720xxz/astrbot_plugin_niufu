@@ -739,7 +739,7 @@ class UniversalServerPlugin(Star):
     async def _send_daily_report(self):
         groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
         for g in groups:
-            img_path = self._build_stats_image(g, "一天")
+            img_path = await asyncio.to_thread(self._build_stats_image, g, "一天")
             if not img_path:
                 continue
             text = f"每日报告 {g} {datetime.now().strftime('%m-%d %H:%M')}"
@@ -1628,7 +1628,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
             return
 
-        img_path = self._build_history_chart_image(groups_to_show, name_filter=name_filter)
+        img_path = await asyncio.to_thread(self._build_history_chart_image, groups_to_show, name_filter=name_filter)
         if not img_path:
             for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
                 yield chunk
@@ -1699,7 +1699,7 @@ class UniversalServerPlugin(Star):
             return
         groups = [target_g] if target_g else list(set(s["group"] for s in GLOBAL_DATA["servers"]))
         for g in groups:
-            img_path = self._build_stats_image(g, period)
+            img_path = await asyncio.to_thread(self._build_stats_image, g, period)
             if not img_path:
                 for chunk in self._reply_at(event, f"{g} 暂无足够数据。"):
                     yield chunk
@@ -1761,7 +1761,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
             return
 
-        img_path = self._render_log_image(date_prefix, cmd_filtered, err_filtered, hist_data, count)
+        img_path = await asyncio.to_thread(self._render_log_image, date_prefix, cmd_filtered, err_filtered, hist_data, count)
         if not img_path:
             for chunk in self._reply_at(event, "渲染日志图片失败。"):
                 yield chunk
