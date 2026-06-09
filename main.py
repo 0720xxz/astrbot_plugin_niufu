@@ -864,7 +864,7 @@ class UniversalServerPlugin(Star):
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
-    async def on_message(self, event: AstrMessageEvent):
+    async def on_message(self, event: AstrMessageEvent, *args, **kwargs):
         if not self._bot and hasattr(event, 'bot'):
             self._bot = event.bot
             self.start_background_tasks()
