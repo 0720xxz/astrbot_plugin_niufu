@@ -215,6 +215,13 @@ class UniversalServerPlugin(Star):
         self.server_cache: dict[str, dict] = load_server_cache()
         self.cache_ttl = 60
         self.last_history_save = datetime.now()
+        self.alert_cooldown: dict[str, datetime] = {}
+        self.alert_cooldown_min = 10
+        self.last_player_counts: dict[str, int] = {}
+        self.last_report_time: dict[str, datetime] = {}
+        self.alert_task = None
+        self.report_task = None
+        self._bot = None
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -633,6 +640,177 @@ class UniversalServerPlugin(Star):
         except Exception:
             pass
 
+    def start_background_tasks(self):
+        if self.alert_task is None or self.alert_task.done():
+            self.alert_task = asyncio.create_task(self._alert_loop())
+        if self.report_task is None or self.report_task.done():
+            self.report_task = asyncio.create_task(self._report_loop())
+
+    async def _alert_loop(self):
+        await asyncio.sleep(60)
+        while True:
+            try:
+                await self._check_alerts()
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+
+    async def _check_alerts(self):
+        servers = GLOBAL_DATA["servers"]
+        for s in servers:
+            if not self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True):
+                continue
+            name = s["display_name"]
+            grp = s["group"]
+            url = f"https://api.scplist.kr/api/servers/{s['id']}"
+            data = None
+            for _ in range(3):
+                data = await self._fetch(url, sid=s["id"])
+                if data is not None:
+                    break
+                await asyncio.sleep(3)
+            if data is None:
+                self._push_alert(grp, name, "离线", "服务器连续3次请求失败，可能已离线")
+                continue
+            players_str = str(data.get("players", "0"))
+            p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
+            max_p = data.get("max_players") or (int(players_str.split("/")[1]) if "/" in players_str else 0)
+            prev = self.last_player_counts.get(name, p)
+            if prev > 20 and p < prev * 0.5:
+                self._push_alert(grp, name, "人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过50%")
+            self.last_player_counts[name] = p
+
+    def _push_alert(self, group_name, name, alert_type, msg):
+        key = f"{name}::{alert_type}"
+        now = datetime.now()
+        if key in self.alert_cooldown:
+            if (now - self.alert_cooldown[key]).total_seconds() < self.alert_cooldown_min * 60:
+                return
+        self.alert_cooldown[key] = now
+        text = f"[告警] {name} {alert_type}\n{msg}"
+        for gid, gname in self.group_bindings.items():
+            if gname == group_name:
+                self._send_to_group_id(gid, text)
+        self._send_telegram(text)
+
+    def _send_to_group_id(self, group_id: str, text: str):
+        if not self._bot:
+            return
+        async def _send():
+            try:
+                await self._bot.api.call_action("send_group_msg", group_id=int(group_id),
+                    message=[{"type": "text", "data": {"text": text}}])
+            except Exception:
+                pass
+        asyncio.create_task(_send())
+
+    async def _report_loop(self):
+        await asyncio.sleep(10)
+        while True:
+            now = datetime.now()
+            hm = now.strftime("%H:%M")
+            if hm in ("00:00", "00:01", "12:00", "12:01"):
+                day_key = now.strftime("%Y-%m-%d") + ("_am" if now.hour == 0 else "_pm")
+                if day_key not in self.last_report_time:
+                    self.last_report_time[day_key] = now
+                    stale = [k for k, v in self.last_report_time.items() if (now - v).days > 1]
+                    for k in stale:
+                        self.last_report_time.pop(k, None)
+                    await self._send_daily_report()
+            await asyncio.sleep(50)
+
+    async def _send_daily_report(self):
+        groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+        for g in groups:
+            img_path = self._build_stats_image(g, "一天")
+            if not img_path:
+                continue
+            text = f"每日报告 {g} {datetime.now().strftime('%m-%d %H:%M')}"
+            for gid, gname in self.group_bindings.items():
+                if gname == g:
+                    self._send_to_group_id(gid, text)
+            self._send_telegram(text, img_path)
+
+    def _send_telegram(self, text: str, img_path: str = None):
+        token = GLOBAL_DATA.get("telegram_bot_token", "")
+        chat_id = GLOBAL_DATA.get("telegram_chat_id", "")
+        if not token or not chat_id:
+            return
+        async def _tg():
+            try:
+                import aiohttp
+                session = aiohttp.ClientSession()
+                if img_path:
+                    url_tg = f"https://api.telegram.org/bot{token}/sendPhoto"
+                    form = aiohttp.FormData()
+                    form.add_field("chat_id", chat_id)
+                    form.add_field("caption", text)
+                    form.add_field("photo", open(img_path, "rb"))
+                    await session.post(url_tg, data=form)
+                else:
+                    url_tg = f"https://api.telegram.org/bot{token}/sendMessage"
+                    await session.post(url_tg, json={"chat_id": chat_id, "text": text})
+                await session.close()
+            except Exception:
+                pass
+        asyncio.create_task(_tg())
+
+    def _build_stats_image(self, group_name: str, period: str) -> str:
+        now = datetime.now()
+        if period == "一天":
+            cutoff = now.timestamp() - 86400
+        elif period == "一周":
+            cutoff = now.timestamp() - 604800
+        else:
+            cutoff = now.timestamp() - 2592000
+        server_data = []
+        colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899"]
+        ci = 0
+        for name, entries in self.server_history.items():
+            srv = next((s for s in GLOBAL_DATA["servers"] if s["display_name"] == name and s["group"] == group_name), None)
+            if not srv:
+                continue
+            filtered = [e for e in entries if e.get("raw_time", "")]
+            filtered = [e for e in filtered if datetime.strptime(e["raw_time"], "%Y-%m-%d %H:%M:%S").timestamp() >= cutoff]
+            if not filtered:
+                continue
+            players = [e["players"] for e in filtered]
+            peak = max(players)
+            low = min(players)
+            avg = sum(players) // len(players)
+            cur = filtered[-1]
+            cur_str = f"{cur['players']}/{cur['max']}" if cur['max'] > 0 else str(cur['players'])
+            server_data.append((name, filtered, colors[ci % len(colors)], peak, low, avg, cur_str))
+            ci += 1
+        if not server_data:
+            return ""
+        font_name = "C:/Windows/Fonts/msyh.ttc"
+        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
+        try:
+            f_title = ImageFont.truetype(font_bold, 22)
+            f_row = ImageFont.truetype(font_name, 13)
+        except Exception:
+            f_title = f_row = ImageFont.load_default()
+        row_h = 28
+        img_w = 750
+        img_h = 60 + len(server_data) * row_h + 10
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.text((20, 12), f"{group_name} {period}统计 {now.strftime('%m-%d %H:%M')}", fill=(34, 34, 34), font=f_title)
+        header = f"{'服务器':<20}{'当前':>10}{'峰值':>8}{'低谷':>8}{'均值':>8}"
+        draw.text((20, 42), header, fill=(100, 100, 100), font=f_row)
+        for i, (name, _, color, peak, low, avg, cur) in enumerate(server_data):
+            y = 65 + i * row_h
+            r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+            draw.text((20, y), name, fill=(51, 51, 51), font=f_row)
+            draw.text((220, y), cur, fill=(r, g, b), font=f_row)
+            draw.text((310, y), str(peak), fill=(51, 51, 51), font=f_row)
+            draw.text((390, y), str(low), fill=(51, 51, 51), font=f_row)
+            draw.text((470, y), str(avg), fill=(r, g, b), font=f_row)
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_stats_{group_name}.png")
+        img.save(path, "PNG")
+        return path
+
     def _reply_at(self, event, text):
         if event.get_platform_name() == "aiocqhttp":
             asyncio.create_task(self._send_onebot_and_retract(event, text))
@@ -681,11 +859,14 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/调整显示", "/日志"
+        "/开启无斜杠", "/关闭无斜杠", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
+        if not self._bot and hasattr(event, 'bot'):
+            self._bot = event.bot
+            self.start_background_tasks()
         if self._is_blacklisted(event):
             return
         msg = event.get_message_str().strip()
@@ -724,7 +905,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志"
+            "/牛服", "/鸽服", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -1439,6 +1620,54 @@ class UniversalServerPlugin(Star):
         except ValueError:
             for chunk in self._reply_at(event, "请输入 5-240 之间的整数。"):
                 yield chunk
+
+    @filter.command("统计")
+    async def cmd_stats(self, event: AstrMessageEvent):
+        self._log_command(event, "/统计")
+        parts = event.get_message_str().strip().split()
+        period = "一天"
+        target_g = None
+        for p in parts[1:]:
+            if p in ("一天", "一周", "一月"):
+                period = p
+            else:
+                target_g = p
+        if not self.server_history:
+            for chunk in self._reply_at(event, "暂无历史数据。"):
+                yield chunk
+            return
+        groups = [target_g] if target_g else list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+        for g in groups:
+            img_path = self._build_stats_image(g, period)
+            if not img_path:
+                for chunk in self._reply_at(event, f"{g} 暂无足够数据。"):
+                    yield chunk
+                continue
+            try:
+                if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                    group_id = int(event.message_obj.group_id)
+                    img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                    resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                    msg_id = None
+                    if isinstance(resp, dict):
+                        d = resp.get("data") or resp
+                        msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
+                    if msg_id is not None:
+                        msg_id = int(msg_id)
+                        bot = event.bot
+                        async def _retract_s():
+                            await asyncio.sleep(30)
+                            try:
+                                await bot.api.call_action("delete_msg", message_id=msg_id)
+                            except Exception:
+                                pass
+                        asyncio.create_task(_retract_s())
+                else:
+                    yield event.image_result(img_path)
+            except Exception as e:
+                logger.warning(f"[服务器框架] 发送统计图片失败: {e}")
+                for chunk in self._reply_at(event, "发送统计图片失败。"):
+                    yield chunk
 
     @filter.command("日志")
     async def cmd_logsearch(self, event: AstrMessageEvent):
