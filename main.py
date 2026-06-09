@@ -42,10 +42,10 @@ DEFAULT_SERVER_DATA = {
     "refresh_interval_max": 120,
     "refresh_decay_step": 15,
     "group_headers": {
-        "示范组": ["--- 通用服务器框架 ---", "=================="]
+        "内战组": ["--- 通用服务器框架 ---", "=================="]
     },
     "servers": [
-        {"id": "59288", "group": "示范组", "default_name": "示范服1", "display_name": "测试服务器"}
+        {"id": "59288", "group": "内战组", "default_name": "示范服1", "display_name": "测试服务器"}
     ]
 }
 
@@ -522,7 +522,7 @@ class UniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in servers]
-        results = await asyncio.gather(*(self._fetch(url) for url in urls))
+        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
         for s, data in zip(servers, results):
             if data:
                 players = data.get("players", 0)
@@ -575,7 +575,7 @@ class UniversalServerPlugin(Star):
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
             urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in sg]
-            results = await asyncio.gather(*(self._fetch(url) for url in urls))
+            results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
             all_empty = False
             for s, data in zip(sg, results):
                 if data:
@@ -605,7 +605,7 @@ class UniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in active_servers]
-        results = await asyncio.gather(*(self._fetch(url) for url in urls))
+        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
@@ -890,7 +890,7 @@ class UniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] OneBot发送/撤回失败: {e}")
 
     ADMIN_COMMANDS = [
-        "/查看所有服", "/添加服", "/删除服", "/启用端口", "/禁用端口",
+        "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
         "/开启无斜杠", "/关闭无斜杠", "/撤回时间", "/tg设置", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
@@ -935,7 +935,7 @@ class UniversalServerPlugin(Star):
                 return
             return
         registered_commands = [
-            "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服",
+            "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
@@ -1057,6 +1057,7 @@ class UniversalServerPlugin(Star):
 /查看所有服 - 查看所有组别、服务器及启用状态
 /添加服 <组别> <识别名> <API_ID> <展示名>
 /删除服 <组别> <识别名>
+/删除组 <组名> - 删除整个组别及其下所有服务器
 /启用端口 所有/<组别> 或 /启用端口 <组别> <识别名>
 /禁用端口 所有/<组别> 或 /禁用端口 <组别> <识别名>
 /黑名单 <添加群/删除群/添加人/删除人> <号码>
@@ -1218,6 +1219,28 @@ class UniversalServerPlugin(Star):
             else:
                 for chunk in self._reply_at(event, f" 组【{group_name}】不存在或该组下没有服务器。"):
                     yield chunk
+
+    @filter.command("删除组")
+    async def del_group(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        msg = event.get_message_str().strip().split(maxsplit=1)
+        if len(msg) < 2:
+            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            for chunk in self._reply_at(event, f"用法：/删除组 <组名>\n已有组别：{', '.join(groups)}"):
+                yield chunk
+            return
+        gname = msg[1].strip()
+        if gname not in set(s["group"] for s in GLOBAL_DATA["servers"]):
+            for chunk in self._reply_at(event, f"组【{gname}】不存在。"):
+                yield chunk
+            return
+        GLOBAL_DATA["servers"] = [s for s in GLOBAL_DATA["servers"] if s["group"] != gname]
+        GLOBAL_DATA["group_headers"].pop(gname, None)
+        save_server_data(GLOBAL_DATA)
+        await self._force_refresh_all()
+        for chunk in self._reply_at(event, f"已删除组【{gname}】及其下所有服务器。"):
+            yield chunk
 
     @filter.command("设置组头部文字")
     async def set_group_headers(self, event: AstrMessageEvent):
