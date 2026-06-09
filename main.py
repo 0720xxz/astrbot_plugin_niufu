@@ -1961,7 +1961,7 @@ class UniversalServerPlugin(Star):
                  "/牛服 /鸽服 /查服 <组名> /ip [组名]\n"
                  "/历史 [组名] [服名] /统计 [天/周/月] [组名]\n"
                  "/日志 [日期] [条数] /niulog /help\n\n"
-                 "直接发送组名(如"牛")也可查询 炸了/卡了等关键词自动回复")
+                 '直接发送组名(如"牛")也可查询 炸了/卡了等关键词自动回复')
             await self._tg_send_text(token, chat_id, h)
 
         elif cmd == "/ip":
