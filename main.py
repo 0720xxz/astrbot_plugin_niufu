@@ -193,7 +193,7 @@ def save_error_logs(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.8")
+@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "3.9")
 class UniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
