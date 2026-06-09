@@ -299,7 +299,7 @@ class UniversalServerPlugin(Star):
             logs = logs[-2000:]
         save_command_logs(logs)
 
-    def _build_history_chart_image(self, groups_to_show: list) -> str:
+    def _build_history_chart_image(self, groups_to_show: list, name_filter: str = None) -> str:
         colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899",
                    "#06B6D4", "#84CC16", "#F97316", "#6366F1"]
         server_data = []
@@ -310,6 +310,9 @@ class UniversalServerPlugin(Star):
                        and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
             for s in servers:
                 name = s["display_name"]
+                if name_filter:
+                    if name_filter not in name and name_filter not in s.get("default_name", ""):
+                        continue
                 if name in shown:
                     continue
                 shown.add(name)
@@ -1358,8 +1361,10 @@ class UniversalServerPlugin(Star):
 
     @filter.command("历史")
     async def cmd_history(self, event: AstrMessageEvent):
-        msg = event.get_message_str().strip().split(maxsplit=1)
-        target_group = msg[1].strip() if len(msg) > 1 else None
+        self._log_command(event, "/历史")
+        parts = event.get_message_str().strip().split(maxsplit=2)
+        target_group = parts[1].strip() if len(parts) > 1 else None
+        name_filter = parts[2].strip() if len(parts) > 2 else None
 
         if target_group:
             groups_to_show = [g for g in set(s["group"] for s in GLOBAL_DATA["servers"]) if target_group in g]
@@ -1373,7 +1378,7 @@ class UniversalServerPlugin(Star):
                 yield chunk
             return
 
-        img_path = self._build_history_chart_image(groups_to_show)
+        img_path = self._build_history_chart_image(groups_to_show, name_filter=name_filter)
         if not img_path:
             for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
                 yield chunk
