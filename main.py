@@ -646,6 +646,7 @@ class UniversalServerPlugin(Star):
             self.alert_task = asyncio.create_task(self._alert_loop())
         if self.report_task is None or self.report_task.done():
             self.report_task = asyncio.create_task(self._report_loop())
+        self.start_tg_polling()
 
     async def _alert_loop(self):
         await asyncio.sleep(60)
@@ -1896,6 +1897,153 @@ class UniversalServerPlugin(Star):
             save_server_data(GLOBAL_DATA)
             for chunk in self._reply_at(event, f"Telegram Bot Token 已设置"):
                 yield chunk
+
+    def start_tg_polling(self):
+        token = GLOBAL_DATA.get("telegram_bot_token", "")
+        if not token:
+            return
+        asyncio.create_task(self._tg_poll_loop(token))
+
+    async def _tg_poll_loop(self, token: str):
+        await asyncio.sleep(5)
+        offset = 0
+        while True:
+            try:
+                url = f"https://api.telegram.org/bot{token}/getUpdates?timeout=30&offset={offset}"
+                async with aiohttp.ClientSession() as sess:
+                    async with sess.get(url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if data.get("ok") and data.get("result"):
+                                for upd in data["result"]:
+                                    offset = upd["update_id"] + 1
+                                    asyncio.create_task(self._tg_handle_update(upd, token))
+            except Exception:
+                await asyncio.sleep(5)
+
+    async def _tg_handle_update(self, upd: dict, token: str):
+        msg = upd.get("message") or upd.get("channel_post")
+        if not msg:
+            return
+        chat = msg.get("chat", {})
+        chat_id = chat.get("id")
+        text = msg.get("text", "")
+        if not chat_id or not text:
+            return
+        parts = text.strip().split()
+        cmd = parts[0].lower() if parts else ""
+        args = parts[1:] if len(parts) > 1 else []
+
+        if cmd == "/牛服" or cmd == "/niufu":
+            groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]])) or ["牛"]
+            data = await self._build_aggregated_info(groups)
+            await self._tg_send_text(token, chat_id, "\n".join(data))
+
+        elif cmd == "/鸽服" or cmd == "/gef":
+            groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]])) or ["鸽"]
+            data = await self._build_aggregated_info(groups)
+            await self._tg_send_text(token, chat_id, "\n".join(data))
+
+        elif cmd == "/查服" or cmd == "/chafu":
+            g = args[0] if args else ""
+            if not g:
+                await self._tg_send_text(token, chat_id, "用法: /查服 <组名>")
+            else:
+                data = await self._build_group_info(g)
+                await self._tg_send_text(token, chat_id, "\n".join(data))
+
+        elif cmd == "/help" or cmd == "/帮助":
+            h = "通用服务器框架 TG版\n/牛服 /鸽服 /查服 <组名> /ip [组名]\n/历史 [组名] [服名] /统计 [一天/一周/一月] [组名]\n/日志 [日期] [条数] /niulog\n/help"
+            await self._tg_send_text(token, chat_id, h)
+
+        elif cmd == "/ip":
+            g = args[0] if args else None
+            data = await self._build_ip_info(g)
+            await self._tg_send_text(token, chat_id, "\n".join(data))
+
+        elif cmd == "/历史" or cmd == "/history":
+            g = args[0] if args else None
+            nf = args[1] if len(args) > 1 else None
+            groups = [g] if g else list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            if g and g not in groups:
+                groups = [gg for gg in set(s["group"] for s in GLOBAL_DATA["servers"]) if g in gg] or [g]
+            img = await asyncio.to_thread(self._build_history_chart_image, groups, name_filter=nf)
+            if img:
+                await self._tg_send_photo(token, chat_id, img, "历史趋势")
+            else:
+                await self._tg_send_text(token, chat_id, "暂无历史数据")
+
+        elif cmd == "/统计" or cmd == "/stats":
+            period = "一天"
+            g = None
+            for a in args:
+                if a in ("一天", "一周", "一月"):
+                    period = a
+                else:
+                    g = a
+            groups = [g] if g else list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            for grp in groups:
+                img = await asyncio.to_thread(self._build_stats_image, grp, period)
+                if img:
+                    await self._tg_send_photo(token, chat_id, img, f"{grp} {period}统计")
+
+        elif cmd == "/日志" or cmd == "/log":
+            count = 60
+            target_date = datetime.now().strftime("%Y-%m-%d")
+            for a in args:
+                if re.match(r'^\d{4}-\d{2}-\d{2}$', a) or re.match(r'^\d{2}-\d{2}$', a):
+                    target_date = f"{datetime.now().year}-{a}" if len(a) == 5 else a
+                elif a.isdigit():
+                    count = max(5, min(int(a), 500))
+            cmd_logs = load_command_logs()
+            err_logs = load_error_logs()
+            cmd_f = [e for e in cmd_logs if e.get("time", "").startswith(target_date)][-count:]
+            err_f = [e for e in err_logs if e.get("time", "").startswith(target_date)][-count:]
+            hist_data = {}
+            for name, entries in self.server_history.items():
+                recent = [e for e in entries if e.get("raw_time", e.get("time", "")).startswith(target_date)]
+                if recent:
+                    hist_data[name] = recent[-count:]
+            img = await asyncio.to_thread(self._render_log_image, target_date, cmd_f, err_f, hist_data, count)
+            if img:
+                await self._tg_send_photo(token, chat_id, img, f"日志 {target_date}")
+
+        elif cmd == "/niulog":
+            if not self.error_logs:
+                await self._tg_send_text(token, chat_id, "暂无错误日志")
+            else:
+                lines = ["错误日志", "========"]
+                for e in self.error_logs[-20:]:
+                    lines.append(f"[{e['time']}] {e['msg']}")
+                await self._tg_send_text(token, chat_id, "\n".join(lines))
+
+        else:
+            all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
+            for g in all_groups:
+                if g in text:
+                    data = await self._build_group_info(g)
+                    await self._tg_send_text(token, chat_id, "\n".join(data))
+                    return
+
+    async def _tg_send_text(self, token: str, chat_id, text: str):
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            async with aiohttp.ClientSession() as sess:
+                await sess.post(url, json={"chat_id": chat_id, "text": text[:4000]}, timeout=aiohttp.ClientTimeout(total=10))
+        except Exception:
+            pass
+
+    async def _tg_send_photo(self, token: str, chat_id, img_path: str, caption: str = ""):
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendPhoto"
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(chat_id))
+            form.add_field("caption", caption[:200])
+            form.add_field("photo", open(img_path, "rb"))
+            async with aiohttp.ClientSession() as sess:
+                await sess.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
+        except Exception:
+            pass
 
     async def __del__(self):
         if self.session and not self.session.closed:
