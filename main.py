@@ -744,9 +744,22 @@ class UniversalServerPlugin(Star):
                 continue
             text = f"每日报告 {g} {datetime.now().strftime('%m-%d %H:%M')}"
             for gid, gname in self.group_bindings.items():
-                if gname == g:
-                    self._send_to_group_id(gid, text)
+                if gname == g and self._bot:
+                    self._send_image_to_group(gid, img_path, text)
             self._send_telegram(text, img_path)
+
+    def _send_image_to_group(self, group_id: str, img_path: str, caption: str = ""):
+        if not self._bot:
+            return
+        async def _send():
+            try:
+                msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                if caption:
+                    msg.insert(0, {"type": "text", "data": {"text": caption + "\n"}})
+                await self._bot.api.call_action("send_group_msg", group_id=int(group_id), message=msg)
+            except Exception:
+                pass
+        asyncio.create_task(_send())
 
     def _send_telegram(self, text: str, img_path: str = None):
         token = GLOBAL_DATA.get("telegram_bot_token", "")
