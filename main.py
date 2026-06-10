@@ -967,7 +967,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -1013,7 +1013,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/info", "/告警设置", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/info", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -2126,6 +2126,36 @@ class UniversalServerPlugin(Star):
         except ValueError:
             for chunk in self._reply_at(event, "降幅 10-90，人数 5-100。"):
                 yield chunk
+
+    @filter.command("狂暴模式")
+    async def cmd_frenzy(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        if len(parts) >= 2 and parts[1] == "关闭":
+            self._adaptive_locked = False
+            self.history_interval = GLOBAL_DATA.pop("history_interval", 120)
+            self.cache_ttl = GLOBAL_DATA.pop("cache_ttl", 60)
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, "狂暴模式已关闭 恢复自适应"):
+                yield chunk
+            return
+        if len(parts) < 2 or parts[1] != "确认":
+            if self._adaptive_locked and self.history_interval == 10:
+                for chunk in self._reply_at(event, "狂暴模式已开启(10s请求)\n/狂暴模式 关闭 退出"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, "此操作将每10秒请求API 增加服务器负担\n确认请输入 /狂暴模式 确认"):
+                    yield chunk
+            return
+        self.history_interval = 10
+        self.cache_ttl = 5
+        self._adaptive_locked = True
+        GLOBAL_DATA["history_interval"] = 10
+        GLOBAL_DATA["cache_ttl"] = 5
+        save_server_data(GLOBAL_DATA)
+        for chunk in self._reply_at(event, "狂暴模式已开启 每10秒请求\n/狂暴模式 关闭 退出"):
+            yield chunk
 
     @filter.command("轮询间隔")
     async def cmd_poll_interval(self, event: AstrMessageEvent):
