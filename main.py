@@ -219,6 +219,9 @@ class UniversalServerPlugin(Star):
         self.alert_cooldown_min = 10
         self.last_player_counts: dict[str, int] = {}
         self.last_report_time: dict[str, datetime] = {}
+        self.alert_drop_pct = GLOBAL_DATA.get("alert_drop_pct", 50)
+        self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
+        self._was_zero: dict[str, bool] = {}
         self.alert_task = None
         self.report_task = None
         self._bot = None
@@ -525,10 +528,14 @@ class UniversalServerPlugin(Star):
         results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
         for s, data in zip(servers, results):
             if data:
+                online = data.get("online", True)
                 players = data.get("players", 0)
                 max_players = data.get("max_players")
                 self._save_history(s["display_name"], players, max_players)
-                status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
+                if not online:
+                    status_str = f"{s['display_name']} 离线"
+                else:
+                    status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                 lines.append(status_str)
             else:
                 lines.append(f"{s['display_name']} 离线")
@@ -579,10 +586,14 @@ class UniversalServerPlugin(Star):
             all_empty = False
             for s, data in zip(sg, results):
                 if data:
+                    online = data.get("online", True)
                     players = data.get("players", 0)
                     max_players = data.get("max_players")
                     self._save_history(s["display_name"], players, max_players)
-                    status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
+                    if not online:
+                        status_str = f"{s['display_name']} 离线"
+                    else:
+                        status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                     lines.append(status_str)
                 else:
                     lines.append(f"{s['display_name']} 离线")
@@ -678,8 +689,17 @@ class UniversalServerPlugin(Star):
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
             max_p = data.get("max_players") or (int(players_str.split("/")[1]) if "/" in players_str else 0)
             prev = self.last_player_counts.get(name, p)
-            if prev > 20 and p < prev * 0.5:
-                self._push_alert(grp, name, "人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过50%")
+            drop_pct = self.alert_drop_pct / 100.0
+            min_p = self.alert_min_players
+            was_zero = self._was_zero.get(name, False)
+            if prev > min_p and p < prev * (1 - drop_pct):
+                if p == 0 and not was_zero:
+                    self._push_alert(grp, name, "正在重启", f"人数从 {prev} 骤降至 0/{max_p}，可能正在重启")
+                    self._was_zero[name] = True
+                elif p > 0:
+                    self._push_alert(grp, name, "人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
+            if p > 0 and was_zero:
+                self._was_zero[name] = False
             self.last_player_counts[name] = p
         self._update_adaptive_interval()
 
@@ -894,7 +914,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/查玩家", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -940,7 +960,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/告警设置", "/查玩家", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
