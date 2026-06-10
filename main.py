@@ -43,6 +43,13 @@ DEFAULT_SERVER_DATA = {
     "refresh_interval_min": 30,
     "refresh_interval_max": 120,
     "refresh_decay_step": 15,
+    "history_interval": 120,
+    "cache_ttl": 60,
+    "alert_drop_pct": 50,
+    "alert_min_players": 20,
+    "retract_seconds": 30,
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
     "group_headers": {
         "内战组": ["--- 通用服务器框架 ---", "=================="]
     },
@@ -59,11 +66,15 @@ def load_server_data():
                 if "group_headers" not in data:
                     data["group_headers"] = DEFAULT_SERVER_DATA["group_headers"].copy()
                 return data
+        except Exception as e:
+            logger.warning(f"[服务器框架] 配置文件损坏 {SERVER_DATA_FILE}: {e}，使用默认值")
+    else:
+        try:
+            with open(SERVER_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_SERVER_DATA, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
-    with open(SERVER_DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(DEFAULT_SERVER_DATA, f, ensure_ascii=False, indent=2)
-    return DEFAULT_SERVER_DATA
+    return dict(DEFAULT_SERVER_DATA)
 
 def save_server_data(data):
     with open(SERVER_DATA_FILE, "w", encoding="utf-8") as f:
@@ -76,8 +87,11 @@ def _get_toggle_key(group: str, default_name: str) -> str:
 
 def load_toggle_state():
     if TOGGLE_FILE.exists():
-        with open(TOGGLE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(TOGGLE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[服务器框架] 配置文件损坏 {TOGGLE_FILE}: {e}")
     return {_get_toggle_key(s["group"], s["default_name"]): True for s in GLOBAL_DATA["servers"]}
 
 def save_toggle_state(state):
@@ -257,6 +271,7 @@ class douUniversalServerPlugin(Star):
         self._plogs_dirty = False
         self._cache_dirty = False
         self._h_dirty = False
+        self._temp_seq = 0
         self.alert_task = None
         self.report_task = None
         self._bot = None
@@ -544,7 +559,8 @@ class douUniversalServerPlugin(Star):
                 line_y = row_y - 3
                 draw.line([(chart_x, line_y), (img_w - 15, line_y)], fill=(240, 240, 240), width=1)
 
-        path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_history.png")
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_niufu_history_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
@@ -721,7 +737,7 @@ class douUniversalServerPlugin(Star):
             new_cache = {}
             for g in groups:
                 try:
-                    new_cache[g] = await self._build_group_info(g)
+                    new_cache[g] = await asyncio.wait_for(self._build_group_info(g), timeout=30)
                 except Exception:
                     pass
             if new_cache:
@@ -807,7 +823,9 @@ class douUniversalServerPlugin(Star):
                 continue
             players_str = str(data.get("players", "0"))
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
-            max_p = data.get("max_players") or (int(players_str.split("/")[1]) if "/" in players_str else 0)
+            max_p = data.get("max_players")
+            if max_p is None:
+                max_p = int(players_str.split("/")[1]) if "/" in players_str else 0
             prev_entry = self.last_player_counts.get(name)
             prev = prev_entry.get("p", p) if prev_entry else p
             prev_max = prev_entry.get("m", max_p) if prev_entry else max_p
@@ -956,10 +974,12 @@ class douUniversalServerPlugin(Star):
             try:
                 async with aiohttp.ClientSession() as session:
                     if img_path:
+                        with open(img_path, "rb") as fh:
+                            img_bytes = fh.read()
                         form = aiohttp.FormData()
                         form.add_field("chat_id", chat_id)
                         form.add_field("caption", text)
-                        form.add_field("photo", open(img_path, "rb"), filename=os.path.basename(img_path))
+                        form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
                         await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
                     else:
                         await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
@@ -1024,7 +1044,8 @@ class douUniversalServerPlugin(Star):
             draw.text((col3, y), str(peak), fill=(51, 51, 51), font=f_row)
             draw.text((col4, y), str(low), fill=(51, 51, 51), font=f_row)
             draw.text((col5, y), str(avg), fill=(r, g, b), font=f_row)
-        path = os.path.join(tempfile.gettempdir(), f"astrbot_stats_{group_name}.png")
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_stats_{group_name}_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
@@ -1139,9 +1160,7 @@ class douUniversalServerPlugin(Star):
                             yield chunk
                         event.stop_event()
                         return
-        has_slash = "/" in msg_lower
-        has_cmd = any(msg_lower.startswith(cmd.lstrip("/")) for cmd in registered_commands)
-        if not has_slash and not has_cmd:
+        if "/" not in msg_lower:
             all_groups = set(s["group"] for s in GLOBAL_DATA["servers"])
             for g in all_groups:
                 if g in msg_lower and is_noslash_enabled(g, self.group_noslash):
@@ -1341,7 +1360,8 @@ class douUniversalServerPlugin(Star):
                     draw.text((x, y), text, fill=(cr, cg, cb), font=f_info)
                     x += tw
                 y += line_h
-        path = os.path.join(tempfile.gettempdir(), "astrbot_info.png")
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_info_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
@@ -2200,7 +2220,8 @@ class douUniversalServerPlugin(Star):
             else:
                 draw.text((20, y), line, fill=(68, 68, 68), font=f_row)
 
-        path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_log.png")
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_niufu_log_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
@@ -2441,7 +2462,13 @@ class douUniversalServerPlugin(Star):
             f_body = ImageFont.truetype(font_name, 11)
         except Exception:
             f_title = f_body = ImageFont.load_default()
-        body_lines = text.split("\n")
+        raw_lines = text.split("\n")
+        body_lines = []
+        for raw in raw_lines:
+            while len(raw) > 80:
+                body_lines.append(raw[:80])
+                raw = raw[80:]
+            body_lines.append(raw)
         line_h = 18
         margin = 15
         img_w = 900
@@ -2453,7 +2480,8 @@ class douUniversalServerPlugin(Star):
         for line in body_lines:
             draw.text((margin, y), line, fill=(51, 51, 51), font=f_body)
             y += line_h
-        path = os.path.join(tempfile.gettempdir(), "astrbot_raw.png")
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_raw_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
@@ -2493,10 +2521,10 @@ class douUniversalServerPlugin(Star):
     async def _tg_poll_loop(self, token: str):
         await asyncio.sleep(5)
         offset = 0
-        while True:
-            try:
-                url = f"https://api.telegram.org/bot{token}/getUpdates?timeout=30&offset={offset}"
-                async with aiohttp.ClientSession() as sess:
+        async with aiohttp.ClientSession() as sess:
+            while True:
+                try:
+                    url = f"https://api.telegram.org/bot{token}/getUpdates?timeout=30&offset={offset}"
                     async with sess.get(url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -2504,8 +2532,8 @@ class douUniversalServerPlugin(Star):
                                 for upd in data["result"]:
                                     offset = upd["update_id"] + 1
                                     asyncio.create_task(self._tg_handle_update(upd, token))
-            except Exception:
-                await asyncio.sleep(5)
+                except Exception:
+                    await asyncio.sleep(5)
 
     async def _tg_handle_update(self, upd: dict, token: str):
         msg = upd.get("message") or upd.get("channel_post")
@@ -2626,10 +2654,12 @@ class douUniversalServerPlugin(Star):
     async def _tg_send_photo(self, token: str, chat_id, img_path: str, caption: str = ""):
         try:
             url = f"https://api.telegram.org/bot{token}/sendPhoto"
+            with open(img_path, "rb") as fh:
+                img_bytes = fh.read()
             form = aiohttp.FormData()
             form.add_field("chat_id", str(chat_id))
             form.add_field("caption", caption[:200])
-            form.add_field("photo", open(img_path, "rb"))
+            form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
             async with aiohttp.ClientSession() as sess:
                 await sess.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
         except Exception:
@@ -2695,10 +2725,6 @@ class douUniversalServerPlugin(Star):
     def __del__(self):
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self.session.close())
-                else:
-                    loop.run_until_complete(self.session.close())
+                asyncio.ensure_future(self.session.close())
             except Exception:
                 pass
