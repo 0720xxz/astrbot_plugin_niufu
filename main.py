@@ -2301,11 +2301,12 @@ class UniversalServerPlugin(Star):
                 count = len(raw.get(s["id"], []))
                 lines.append(f"  {s['display_name']} [{s['id']}]: {count}条")
         else:
-            lines = [f"存储 {len(raw)} 台服务器报文"]
-            for k, v in raw.items():
-                srv = next((s for s in GLOBAL_DATA["servers"] if s["id"] == k), None)
-                name = srv["display_name"] if srv else k
-                lines.append(f"  {name}: {len(v)}条")
+            total = sum(len(v) for v in raw.values())
+            lines = [f"全部服务器报文统计 (共{total}条)"]
+            all_srv = sorted(GLOBAL_DATA["servers"], key=lambda x: x["display_name"])
+            for s in all_srv:
+                count = len(raw.get(s["id"], []))
+                lines.append(f"  {s['display_name']} [{s['group']}]: {count}条")
             lines.append("用法: /报文 <组名> <识别名>")
         for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
