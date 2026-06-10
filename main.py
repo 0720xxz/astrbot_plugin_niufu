@@ -720,8 +720,7 @@ class douUniversalServerPlugin(Star):
             lines.append("暂无启用的服务器")
             lines.append("==============")
             return lines
-        urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in active_servers]
-        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
+        results = await asyncio.gather(*(self._fetch(f"https://api.scplist.kr/api/servers/{srv['id']}", sid=srv["id"]) for srv in active_servers))
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
