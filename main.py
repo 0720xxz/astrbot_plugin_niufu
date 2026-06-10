@@ -708,6 +708,7 @@ class UniversalServerPlugin(Star):
                 await asyncio.sleep(3)
             if data is None:
                 await asyncio.sleep(2)
+                self.server_cache.pop(s["id"], None)
                 data2 = await self._fetch(url, sid=s["id"])
                 if data2 is None:
                     self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
@@ -727,6 +728,7 @@ class UniversalServerPlugin(Star):
                     anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
             if anomaly:
                 await asyncio.sleep(2)
+                self.server_cache.pop(s["id"], None)
                 data2 = await self._fetch(url, sid=s["id"])
                 if data2:
                     p2_str = str(data2.get("players", "0"))
