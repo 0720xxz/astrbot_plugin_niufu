@@ -222,6 +222,7 @@ class UniversalServerPlugin(Star):
         self.alert_drop_pct = GLOBAL_DATA.get("alert_drop_pct", 50)
         self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
         self._was_zero: dict[str, bool] = {}
+        self._alerted: dict[str, str] = {}
         self._adaptive_locked = False
         self.alert_task = None
         self.report_task = None
@@ -710,8 +711,11 @@ class UniversalServerPlugin(Star):
                 await asyncio.sleep(2)
                 self.server_cache.pop(s["id"], None)
                 data2 = await self._fetch(url, sid=s["id"])
-                if data2 is None:
+                if data2 is None and "离线" not in self._alerted.get(name, ""):
                     self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
+                    self._alerted[name] = "离线"
+                elif data2 is not None:
+                    self._alerted.pop(name, None)
                 continue
             players_str = str(data.get("players", "0"))
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
@@ -721,7 +725,7 @@ class UniversalServerPlugin(Star):
             min_p = self.alert_min_players
             was_zero = self._was_zero.get(name, False)
             anomaly = None
-            if prev > min_p and p < prev * (1 - drop_pct):
+            if name not in self._alerted and prev > min_p and p < prev * (1 - drop_pct):
                 if p == 0 and not was_zero:
                     anomaly = ("正在重启", f"人数从 {prev} 骤降至 0/{max_p}")
                 elif p > 0:
@@ -730,15 +734,22 @@ class UniversalServerPlugin(Star):
                 await asyncio.sleep(2)
                 self.server_cache.pop(s["id"], None)
                 data2 = await self._fetch(url, sid=s["id"])
+                confirmed = False
                 if data2:
                     p2_str = str(data2.get("players", "0"))
                     p2 = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
                     if p2 < prev * (1 - drop_pct):
-                        self._push_alert(grp, name, anomaly[0], anomaly[1])
-                    if p2 == 0 and not was_zero and anomaly[0] == "正在重启":
-                        self._was_zero[name] = True
+                        confirmed = True
                 else:
-                    self._push_alert(grp, name, anomaly[0], anomaly[1])
+                    confirmed = True
+                if confirmed:
+                    if name not in self._alerted:
+                        self._push_alert(grp, name, anomaly[0], anomaly[1])
+                        self._alerted[name] = anomaly[0]
+                    if p == 0 and not was_zero and anomaly[0] == "正在重启":
+                        self._was_zero[name] = True
+            if name in self._alerted and p > prev * 0.7:
+                self._alerted.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = p
@@ -798,9 +809,10 @@ class UniversalServerPlugin(Star):
         await asyncio.sleep(10)
         while True:
             now = datetime.now()
-            hm = now.strftime("%H:%M")
-            if hm in ("00:00", "00:01", "12:00", "12:01"):
-                day_key = now.strftime("%Y-%m-%d") + ("_am" if now.hour == 0 else "_pm")
+            h = now.hour
+            m = now.minute
+            if h in (0, 12) and m < 2:
+                day_key = now.strftime("%Y-%m-%d") + ("_am" if h == 0 else "_pm")
                 if day_key not in self.last_report_time:
                     self.last_report_time[day_key] = now
                     stale = [k for k, v in self.last_report_time.items() if (now - v).days > 1]
@@ -841,19 +853,15 @@ class UniversalServerPlugin(Star):
             return
         async def _tg():
             try:
-                import aiohttp
-                session = aiohttp.ClientSession()
-                if img_path:
-                    url_tg = f"https://api.telegram.org/bot{token}/sendPhoto"
-                    form = aiohttp.FormData()
-                    form.add_field("chat_id", chat_id)
-                    form.add_field("caption", text)
-                    form.add_field("photo", open(img_path, "rb"))
-                    await session.post(url_tg, data=form)
-                else:
-                    url_tg = f"https://api.telegram.org/bot{token}/sendMessage"
-                    await session.post(url_tg, json={"chat_id": chat_id, "text": text})
-                await session.close()
+                async with aiohttp.ClientSession() as session:
+                    if img_path:
+                        form = aiohttp.FormData()
+                        form.add_field("chat_id", chat_id)
+                        form.add_field("caption", text)
+                        form.add_field("photo", open(img_path, "rb"))
+                        await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
+                    else:
+                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
             except Exception:
                 pass
         asyncio.create_task(_tg())
@@ -1714,26 +1722,38 @@ class UniversalServerPlugin(Star):
             if target_id not in self.blacklist["groups"]:
                 self.blacklist["groups"].append(target_id)
                 save_blacklist(self.blacklist)
-            for chunk in self._reply_at(event, f" 已将群聊【{target_id}】加入黑名单"):
-                yield chunk
+                for chunk in self._reply_at(event, f"已将群聊【{target_id}】加入黑名单"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"群聊【{target_id}】已在黑名单中"):
+                    yield chunk
         elif subcmd == "删除群":
             if target_id in self.blacklist["groups"]:
                 self.blacklist["groups"].remove(target_id)
                 save_blacklist(self.blacklist)
-            for chunk in self._reply_at(event, f" 已将群聊【{target_id}】移出黑名单"):
-                yield chunk
+                for chunk in self._reply_at(event, f"已将群聊【{target_id}】移出黑名单"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"群聊【{target_id}】不在黑名单中"):
+                    yield chunk
         elif subcmd == "添加人":
             if target_id not in self.blacklist["users"]:
                 self.blacklist["users"].append(target_id)
                 save_blacklist(self.blacklist)
-            for chunk in self._reply_at(event, f" 已将用户【{target_id}】加入全局黑名单"):
-                yield chunk
+                for chunk in self._reply_at(event, f"已将用户【{target_id}】加入黑名单"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"用户【{target_id}】已在黑名单中"):
+                    yield chunk
         elif subcmd == "删除人":
             if target_id in self.blacklist["users"]:
                 self.blacklist["users"].remove(target_id)
                 save_blacklist(self.blacklist)
-            for chunk in self._reply_at(event, f" 已将用户【{target_id}】移出黑名单"):
-                yield chunk
+                for chunk in self._reply_at(event, f"已将用户【{target_id}】移出黑名单"):
+                    yield chunk
+            else:
+                for chunk in self._reply_at(event, f"用户【{target_id}】不在黑名单中"):
+                    yield chunk
         else:
             for chunk in self._reply_at(event, "未知黑名单子命令。"):
                 yield chunk
@@ -2447,5 +2467,8 @@ class UniversalServerPlugin(Star):
                 pass
 
     async def __del__(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+        if hasattr(self, 'session') and self.session and not self.session.closed:
+            try:
+                await self.session.close()
+            except Exception:
+                pass
