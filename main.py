@@ -250,6 +250,9 @@ class douUniversalServerPlugin(Star):
         self.session = None
         self.error_logs: list[dict] = load_error_logs()
         self.error_log_max = 50
+        self._errlog_dirty = False
+        self.command_logs = load_command_logs()
+        self._cmdlog_dirty = False
         self.server_history: dict[str, list] = load_server_history()
         self.history_max = 240
         self.history_interval = GLOBAL_DATA.get("history_interval", 120)
@@ -278,14 +281,17 @@ class douUniversalServerPlugin(Star):
         self.report_task = None
         self._bot = None
         self.retract_seconds = GLOBAL_DATA.get("retract_seconds", 30)
+        self._session_lock = asyncio.Lock()
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/3.8",
-                "Accept": "application/json",
-            }
-            self.session = aiohttp.ClientSession(headers=headers)
+            async with self._session_lock:
+                if self.session is None or self.session.closed:
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/3.8",
+                        "Accept": "application/json",
+                    }
+                    self.session = aiohttp.ClientSession(headers=headers)
         return self.session
 
     async def _fetch(self, url, sid=None):
@@ -363,7 +369,15 @@ class douUniversalServerPlugin(Star):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
         if len(self.error_logs) > self.error_log_max:
             self.error_logs = self.error_logs[-self.error_log_max:]
-        save_error_logs(self.error_logs)
+        self._errlog_dirty = True
+
+    async def _gc_file(self, path: str, delay: int = 60):
+        """延迟删除临时文件"""
+        await asyncio.sleep(delay)
+        try:
+            os.unlink(path)
+        except Exception:
+            pass
 
     def _save_history(self, display_name: str, players, max_players):
         now = datetime.now()
@@ -399,11 +413,10 @@ class douUniversalServerPlugin(Star):
             "sender": str(event.get_sender_id()),
             "group": str(event.message_obj.group_id) if not event.is_private_chat() else "private",
         }
-        logs = load_command_logs()
-        logs.append(entry)
-        if len(logs) > 2000:
-            logs = logs[-2000:]
-        save_command_logs(logs)
+        self.command_logs.append(entry)
+        if len(self.command_logs) > 2000:
+            self.command_logs = self.command_logs[-2000:]
+        self._cmdlog_dirty = True
 
     def _build_history_chart_image(self, groups_to_show: list, name_filter: str = None) -> str:
         colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899",
@@ -783,6 +796,12 @@ class douUniversalServerPlugin(Star):
             if self._h_dirty:
                 save_server_history(self.server_history)
                 self._h_dirty = False
+            if self._errlog_dirty:
+                save_error_logs(self.error_logs)
+                self._errlog_dirty = False
+            if self._cmdlog_dirty:
+                save_command_logs(self.command_logs)
+                self._cmdlog_dirty = False
             await asyncio.sleep(60)
 
     async def _check_alerts(self):
@@ -996,6 +1015,11 @@ class douUniversalServerPlugin(Star):
                 await self._bot.api.call_action("send_group_msg", group_id=int(group_id), message=msg)
             except Exception:
                 pass
+            finally:
+                try:
+                    os.unlink(img_path)
+                except Exception:
+                    pass
         asyncio.create_task(_send())
 
     def _send_telegram(self, text: str, img_path: str = None):
@@ -1005,19 +1029,25 @@ class douUniversalServerPlugin(Star):
             return
         async def _tg():
             try:
-                async with aiohttp.ClientSession() as session:
-                    if img_path:
-                        with open(img_path, "rb") as fh:
-                            img_bytes = fh.read()
-                        form = aiohttp.FormData()
-                        form.add_field("chat_id", chat_id)
-                        form.add_field("caption", text)
-                        form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
-                        await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
-                    else:
-                        await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
+                session = await self._get_session()
+                if img_path:
+                    with open(img_path, "rb") as fh:
+                        img_bytes = fh.read()
+                    form = aiohttp.FormData()
+                    form.add_field("chat_id", chat_id)
+                    form.add_field("caption", text)
+                    form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
+                    await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
+                else:
+                    await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
             except Exception:
                 pass
+            finally:
+                if img_path:
+                    try:
+                        os.unlink(img_path)
+                    except Exception:
+                        pass
         asyncio.create_task(_tg())
 
     def _build_stats_image(self, group_name: str, period: str) -> str:
@@ -1326,8 +1356,14 @@ class douUniversalServerPlugin(Star):
                                 await bot.api.call_action("delete_msg", message_id=msg_id)
                             except Exception:
                                 pass
+                            finally:
+                                try:
+                                    os.unlink(img_path)
+                                except Exception:
+                                    pass
                         asyncio.create_task(_retract_info())
                 else:
+                    asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
             except Exception:
                 for chunk in self._reply_at(event, "发送图片失败"):
@@ -2058,6 +2094,11 @@ class douUniversalServerPlugin(Star):
                             await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
                             pass
+                        finally:
+                            try:
+                                os.unlink(img_path)
+                            except Exception:
+                                pass
                     asyncio.create_task(_retract_img())
             else:
                 yield event.image_result(img_path)
@@ -2129,8 +2170,14 @@ class douUniversalServerPlugin(Star):
                                 await bot.api.call_action("delete_msg", message_id=msg_id)
                             except Exception:
                                 pass
+                            finally:
+                                try:
+                                    os.unlink(img_path)
+                                except Exception:
+                                    pass
                         asyncio.create_task(_retract_s())
                 else:
+                    asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
             except Exception as e:
                 logger.warning(f"[服务器框架] 发送统计图片失败: {e}")
@@ -2152,7 +2199,7 @@ class douUniversalServerPlugin(Star):
             elif p.isdigit():
                 count = max(5, min(int(p), 500))
         date_prefix = target_date
-        cmd_logs = load_command_logs()
+        cmd_logs = self.command_logs
         err_logs = load_error_logs()
         cmd_filtered = [e for e in cmd_logs if e.get("time", "").startswith(date_prefix)][-count:]
         err_filtered = [e for e in err_logs if e.get("time", "").startswith(date_prefix)][-count:]
@@ -2190,6 +2237,11 @@ class douUniversalServerPlugin(Star):
                             await bot.api.call_action("delete_msg", message_id=msg_id)
                         except Exception:
                             pass
+                        finally:
+                            try:
+                                os.unlink(img_path)
+                            except Exception:
+                                pass
                     asyncio.create_task(_retract_log())
             else:
                 yield event.image_result(img_path)
@@ -2646,7 +2698,7 @@ class douUniversalServerPlugin(Star):
                     target_date = f"{datetime.now().year}-{a}" if len(a) == 5 else a
                 elif a.isdigit():
                     count = max(5, min(int(a), 500))
-            cmd_logs = load_command_logs()
+            cmd_logs = self.command_logs
             err_logs = load_error_logs()
             cmd_f = [e for e in cmd_logs if e.get("time", "").startswith(target_date)][-count:]
             err_f = [e for e in err_logs if e.get("time", "").startswith(target_date)][-count:]
@@ -2679,8 +2731,8 @@ class douUniversalServerPlugin(Star):
     async def _tg_send_text(self, token: str, chat_id, text: str):
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
-            async with aiohttp.ClientSession() as sess:
-                await sess.post(url, json={"chat_id": chat_id, "text": text[:4000]}, timeout=aiohttp.ClientTimeout(total=10))
+            session = await self._get_session()
+            await session.post(url, json={"chat_id": chat_id, "text": text[:4000]}, timeout=aiohttp.ClientTimeout(total=10))
         except Exception:
             pass
 
@@ -2693,8 +2745,8 @@ class douUniversalServerPlugin(Star):
             form.add_field("chat_id", str(chat_id))
             form.add_field("caption", caption[:200])
             form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
-            async with aiohttp.ClientSession() as sess:
-                await sess.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
+            session = await self._get_session()
+            await session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
         except Exception:
             pass
 
@@ -2713,7 +2765,7 @@ class douUniversalServerPlugin(Star):
             ("/ip", lambda: self._build_ip_info()),
             ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, gs)),
             ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, None, "一天")),
-            ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), load_command_logs()[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
+            ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), self.command_logs[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
             ("/niulog", lambda: self.error_logs),
             ("缓存", lambda: self.server_cache),
             ("历史数据", lambda: self.server_history),
@@ -2750,8 +2802,45 @@ class douUniversalServerPlugin(Star):
                     img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                     resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
                 else:
+                    asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
                 await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
+    async def teardown(self):
+        """清理后台任务、刷脏数据、关闭会话"""
+        for attr in ('refresh_task', 'alert_task', 'report_task', '_tg_task'):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        if self._errlog_dirty:
+            try:
+                save_error_logs(self.error_logs)
+            except Exception:
+                pass
+        if self._cmdlog_dirty:
+            try:
+                save_command_logs(self.command_logs)
+            except Exception:
+                pass
+        if self._cache_dirty:
+            try:
+                save_server_cache(self.server_cache)
+            except Exception:
+                pass
+        if self._h_dirty:
+            try:
+                save_server_history(self.server_history)
+            except Exception:
+                pass
+        if hasattr(self, 'session') and self.session and not self.session.closed:
+            try:
+                await self.session.close()
             except Exception:
                 pass
 
