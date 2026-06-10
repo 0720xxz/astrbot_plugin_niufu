@@ -1861,12 +1861,15 @@ class UniversalServerPlugin(Star):
         target_group = parts[1].strip() if len(parts) > 1 else None
         name_filter = parts[2].strip() if len(parts) > 2 else None
 
+        all_gs = set(s["group"] for s in GLOBAL_DATA["servers"])
         if target_group:
-            groups_to_show = [g for g in set(s["group"] for s in GLOBAL_DATA["servers"]) if target_group in g]
+            groups_to_show = [g for g in all_gs if target_group in g]
             if not groups_to_show:
-                groups_to_show = [target_group]
+                groups_to_show = [g for g in all_gs if target_group == g]
+            if not groups_to_show:
+                groups_to_show = [g for g in all_gs]  # show all as fallback
         else:
-            groups_to_show = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+            groups_to_show = list(all_gs)
 
         if not self.server_history:
             for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
