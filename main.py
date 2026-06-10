@@ -210,10 +210,10 @@ class UniversalServerPlugin(Star):
         self.error_log_max = 50
         self.server_history: dict[str, list] = load_server_history()
         self.history_max = 240
-        self.history_interval = 120
+        self.history_interval = GLOBAL_DATA.get("history_interval", 120)
         self.history_count = 240
         self.server_cache: dict[str, dict] = load_server_cache()
-        self.cache_ttl = 60
+        self.cache_ttl = GLOBAL_DATA.get("cache_ttl", 60)
         self.last_history_save = datetime.now()
         self.alert_cooldown: dict[str, datetime] = {}
         self.alert_cooldown_min = 10
@@ -2106,6 +2106,9 @@ class UniversalServerPlugin(Star):
                 raise ValueError
             self.history_interval = t
             self.cache_ttl = max(30, t // 2)
+            GLOBAL_DATA["history_interval"] = t
+            GLOBAL_DATA["cache_ttl"] = self.cache_ttl
+            save_server_data(GLOBAL_DATA)
             for chunk in self._reply_at(event, f"轮询间隔已设为 {t}s，缓存TTL {self.cache_ttl}s"):
                 yield chunk
         except ValueError:
@@ -2314,6 +2317,7 @@ class UniversalServerPlugin(Star):
     async def cmd_debug(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
+        self._log_command(event, "/debug")
         results = ["[DEBUG] 指令自检开始", "================"]
         tests = [
             ("/牛服", lambda: self._build_aggregated_info(list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]])) or ["牛"])),
@@ -2331,7 +2335,9 @@ class UniversalServerPlugin(Star):
         images_to_send = []
         for name, fn in tests:
             try:
-                result = await fn() if asyncio.iscoroutinefunction(fn) else fn()
+                result = fn()
+                if asyncio.iscoroutine(result):
+                    result = await result
                 status = "OK" if result else "空"
                 if isinstance(result, list):
                     status = f"OK({len(result)}行)"
@@ -2346,7 +2352,7 @@ class UniversalServerPlugin(Star):
         results.append("================")
         results.append(f"服务器: {len(GLOBAL_DATA['servers'])}台 | 组别: {len(set(s['group'] for s in GLOBAL_DATA['servers']))}个")
         results.append(f"历史: {len(self.server_history)}台 | 缓存: {len(self.server_cache)}条 | 错误: {len(self.error_logs)}条")
-        results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s")
+        results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s | 缓存TTL: {self.cache_ttl}s")
         for chunk in self._reply_at(event, "\n".join(results)):
             yield chunk
         for name, img_path in images_to_send:
