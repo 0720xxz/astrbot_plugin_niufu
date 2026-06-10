@@ -36,6 +36,8 @@ SERVER_HISTORY_FILE = DATA_DIR / "server_history.json"
 SERVER_CACHE_FILE = DATA_DIR / "server_cache.json"
 COMMAND_LOGS_FILE = DATA_DIR / "command_logs.json"
 ERROR_LOGS_FILE = DATA_DIR / "error_logs.json"
+RAW_RESPONSES_FILE = DATA_DIR / "raw_responses.json"
+PLAYER_LOGS_FILE = DATA_DIR / "player_logs.json"
 
 DEFAULT_SERVER_DATA = {
     "refresh_interval_min": 30,
@@ -192,6 +194,32 @@ def save_error_logs(data):
     with open(ERROR_LOGS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_raw_responses():
+    if RAW_RESPONSES_FILE.exists():
+        try:
+            with open(RAW_RESPONSES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_raw_responses(data):
+    with open(RAW_RESPONSES_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_player_logs():
+    if PLAYER_LOGS_FILE.exists():
+        try:
+            with open(PLAYER_LOGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_player_logs(data):
+    with open(PLAYER_LOGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
 class UniversalServerPlugin(Star):
@@ -253,6 +281,7 @@ class UniversalServerPlugin(Star):
                                 data = await resp.json()
                                 self.server_cache[cache_key] = {"ts": now_ts, "data": data}
                                 save_server_cache(self.server_cache)
+                                self._store_raw_response(sid, data)
                                 return data
                     except Exception:
                         pass
@@ -268,6 +297,7 @@ class UniversalServerPlugin(Star):
                         for k in stale:
                             self.server_cache.pop(k, None)
                     save_server_cache(self.server_cache)
+                    self._store_raw_response(sid, data)
                     return data
                 else:
                     msg = f"API 返回非 200 状态码: {resp.status} - {url}"
@@ -278,6 +308,26 @@ class UniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] {msg}")
             self._log_error(msg)
         return None
+
+    def _store_raw_response(self, sid, data):
+        raw = load_raw_responses()
+        key = sid or "unknown"
+        if key not in raw:
+            raw[key] = []
+        raw[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "data": data})
+        if len(raw[key]) > 200:
+            raw[key] = raw[key][-200:]
+        save_raw_responses(raw)
+
+    def _store_player_log(self, sid, display_name, players):
+        plogs = load_player_logs()
+        key = sid or display_name
+        if key not in plogs:
+            plogs[key] = []
+        plogs[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "name": display_name, "players": str(players)})
+        if len(plogs[key]) > 500:
+            plogs[key] = plogs[key][-500:]
+        save_player_logs(plogs)
 
     def _log_error(self, msg: str):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
@@ -310,6 +360,7 @@ class UniversalServerPlugin(Star):
         if len(self.server_history[key]) > self.history_max:
             self.server_history[key] = self.server_history[key][-self.history_max:]
         save_server_history(self.server_history)
+        self._store_player_log(key, key, players)
 
     def _log_command(self, event: AstrMessageEvent, cmd: str):
         entry = {
@@ -974,7 +1025,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -998,7 +1049,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/info", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/info", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -2210,6 +2261,37 @@ class UniversalServerPlugin(Star):
         except ValueError:
             for chunk in self._reply_at(event, "请输入 10-300 之间的整数。"):
                 yield chunk
+
+    @filter.command("报文")
+    async def cmd_raw_data(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        raw = load_raw_responses()
+        if not raw:
+            for chunk in self._reply_at(event, "暂无存储的报文。"):
+                yield chunk
+            return
+        if len(parts) >= 2:
+            key = parts[1]
+            if key in raw:
+                entries = raw[key][-5:]
+                lines = [f"--- {key} 最近5条报文 ---"]
+                for e in entries:
+                    d = e["data"]
+                    lines.append(f"[{e['time']}] online={d.get('online')} players={d.get('players')} info={d.get('info','')[:80]}")
+            else:
+                keys_str = ", ".join(list(raw.keys())[:10])
+                for chunk in self._reply_at(event, f"未找到{key}。可用: {keys_str}"):
+                    yield chunk
+                return
+        else:
+            lines = [f"存储 {len(raw)} 台服务器报文"]
+            for k, v in raw.items():
+                lines.append(f"  {k}: {len(v)}条")
+            lines.append("用法: /报文 <服务器ID>")
+        for chunk in self._reply_at(event, "\n".join(lines)):
+            yield chunk
 
     @filter.command("tg设置")
     async def cmd_tg_token(self, event: AstrMessageEvent):
