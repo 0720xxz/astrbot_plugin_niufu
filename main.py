@@ -828,6 +828,8 @@ class douUniversalServerPlugin(Star):
                         self._alerted[name] = anomaly[0]
                     if p == 0 and not was_zero and anomaly[0] == "正在重启":
                         self._was_zero[name] = True
+            if name in self._alerted and p > min_p:
+                self._alerted.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = {"p": p, "m": max_p}
