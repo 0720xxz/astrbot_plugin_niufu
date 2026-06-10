@@ -85,6 +85,20 @@ class douUniversalServerPlugin(Star):
         self.retract_seconds = GLOBAL_DATA.get("retract_seconds", 30)
         self._session_lock = asyncio.Lock()
         self._font_cache = {}
+        self._data_lock = asyncio.Lock()
+
+    async def _atomic_save(self):
+        """在锁内保存 GLOBAL_DATA，防止与后台循环竞态"""
+        async with self._data_lock:
+            await self._atomic_save()
+        self._pending_tasks: set[asyncio.Task] = set()
+
+    def _create_tracked_task(self, coro) -> asyncio.Task:
+        """创建可追踪的fire-and-forget任务，teardown时可cancel"""
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+        return task
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -394,7 +408,8 @@ class douUniversalServerPlugin(Star):
             return True
         return False
 
-    def _extract_number(self, name: str) -> int:
+    @staticmethod
+    def _extract_number(name: str) -> int:
         match = re.search(r'(\d+)', name)
         if match:
             return int(match.group(1))
@@ -513,13 +528,14 @@ class douUniversalServerPlugin(Star):
             sub_groups = [[s for s in all_servers if s["group"] == g] for g in groups]
             sub_groups = [sg for sg in sub_groups if sg]
 
-        all_empty = True
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
-            urls = [f"{API_BASE}{s['id']}" for s in sg]
-            results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
-            all_empty = False
-            for s, data in zip(sg, results):
+        flat_servers = [(s, f"{API_BASE}{s['id']}") for sg in sub_groups for s in sg]
+        flat_results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for s, url in flat_servers))
+        result_map = {s["id"]: data for (s, _), data in zip(flat_servers, flat_results)}
+        for sg in sub_groups:
+            for s in sg:
+                data = result_map.get(s["id"])
                 if data:
                     online = data.get("online", True)
                     players = data.get("players", 0)
@@ -534,7 +550,7 @@ class douUniversalServerPlugin(Star):
                     lines.append(f"{s['display_name']} 离线")
             lines.append("==============")
 
-        if all_empty:
+        if not flat_servers:
             lines.append("该组别暂无启用的服务器")
             lines.append("==============")
         return lines
@@ -626,101 +642,107 @@ class douUniversalServerPlugin(Star):
 
     async def _check_alerts(self):
         servers = GLOBAL_DATA["servers"]
-        for s in servers:
-            if not self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True):
-                continue
-            name = s["display_name"]
-            grp = s["group"]
-            url = f"{API_BASE}{s['id']}"
-            cache_key = s["id"]
-            cached_entry = self.server_cache.get(cache_key)
-            cached_data = cached_entry.get("data") if cached_entry else None
+        active = [s for s in servers if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+        if not active:
+            return
+        results = await asyncio.gather(*(self._check_single_alert(s) for s in active), return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.debug(f"non-critical: _check_single_alert error: {result}")
+        self._update_adaptive_interval()
+
+    async def _check_single_alert(self, s: dict):
+        name = s["display_name"]
+        grp = s["group"]
+        url = f"{API_BASE}{s['id']}"
+        cache_key = s["id"]
+        cached_entry = self.server_cache.get(cache_key)
+        cached_data = cached_entry.get("data") if cached_entry else None
+        self.server_cache.pop(cache_key, None)
+        data = None
+        for _ in range(3):
+            data = await self._fetch(url, sid=s["id"])
+            if data is not None:
+                break
+            await asyncio.sleep(3)
+        if data is not None:
+            if cached_data is None or str(cached_data.get("players", "")) != str(data.get("players", "")) or cached_data.get("online") != data.get("online"):
+                self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
+                self._cache_dirty = True
+        if data is None:
+            await asyncio.sleep(2)
             self.server_cache.pop(cache_key, None)
-            data = None
+            data2 = await self._fetch(url, sid=s["id"])
+            if data2 is None and name not in self._alerted:
+                self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
+                self._alerted[name] = "离线"
+                self._stable_count.pop(name, None)
+            elif data2 is not None and name in self._alerted:
+                cnt = self._stable_count.get(name, 0) + 1
+                self._stable_count[name] = cnt
+                if cnt >= 3:
+                    self._alerted.pop(name, None)
+                    self._stable_count.pop(name, None)
+            return
+        players_str = str(data.get("players", "0"))
+        p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
+        max_p = data.get("max_players")
+        if max_p is None:
+            max_p = int(players_str.split("/")[1]) if "/" in players_str else 0
+        prev_entry = self.last_player_counts.get(name)
+        prev = prev_entry.get("p", p) if prev_entry else p
+        prev_max = prev_entry.get("m", max_p) if prev_entry else max_p
+        drop_pct = self.alert_drop_pct / 100.0
+        min_p = self.alert_min_players
+        was_zero = self._was_zero.get(name, False)
+        anomaly = None
+        is_override = False
+        if name not in self._alerted and prev > min_p and p < prev * (1 - drop_pct):
+            if p == 0 and not was_zero:
+                anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}")
+            elif p > 0:
+                anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
+        elif name in self._alerted and self._alerted[name] == "人数骤降" and p == 0 and not was_zero:
+            anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}，覆盖骤降告警")
+            is_override = True
+        if anomaly:
+            await asyncio.sleep(2)
+            self.server_cache.pop(s["id"], None)
+            data2 = None
             for _ in range(3):
-                data = await self._fetch(url, sid=s["id"])
-                if data is not None:
+                data2 = await self._fetch(url, sid=s["id"])
+                if data2 is not None:
                     break
                 await asyncio.sleep(3)
-            if data is not None:
-                if cached_data is None or str(cached_data.get("players", "")) != str(data.get("players", "")) or cached_data.get("online") != data.get("online"):
-                    self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
-                    self._cache_dirty = True
-            if data is None:
-                await asyncio.sleep(2)
-                self.server_cache.pop(cache_key, None)
-                data2 = await self._fetch(url, sid=s["id"])
-                if data2 is None and name not in self._alerted:
-                    self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
-                    self._alerted[name] = "离线"
-                    self._stable_count.pop(name, None)
-                elif data2 is not None and name in self._alerted:
-                    cnt = self._stable_count.get(name, 0) + 1
-                    self._stable_count[name] = cnt
-                    if cnt >= 3:
-                        self._alerted.pop(name, None)
-                        self._stable_count.pop(name, None)
-                continue
-            players_str = str(data.get("players", "0"))
-            p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
-            max_p = data.get("max_players")
-            if max_p is None:
-                max_p = int(players_str.split("/")[1]) if "/" in players_str else 0
-            prev_entry = self.last_player_counts.get(name)
-            prev = prev_entry.get("p", p) if prev_entry else p
-            prev_max = prev_entry.get("m", max_p) if prev_entry else max_p
-            drop_pct = self.alert_drop_pct / 100.0
-            min_p = self.alert_min_players
-            was_zero = self._was_zero.get(name, False)
-            anomaly = None
-            is_override = False
-            if name not in self._alerted and prev > min_p and p < prev * (1 - drop_pct):
-                if p == 0 and not was_zero:
-                    anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}")
-                elif p > 0:
-                    anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
-            elif name in self._alerted and self._alerted[name] == "人数骤降" and p == 0 and not was_zero:
-                anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}，覆盖骤降告警")
-                is_override = True
-            if anomaly:
-                await asyncio.sleep(2)
-                self.server_cache.pop(s["id"], None)
-                data2 = None
-                for _ in range(3):
-                    data2 = await self._fetch(url, sid=s["id"])
-                    if data2 is not None:
-                        break
-                    await asyncio.sleep(3)
-                confirmed = False
-                if data2:
-                    p2_str = str(data2.get("players", "0"))
-                    p2 = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
-                    if p2 < prev * (1 - drop_pct):
-                        confirmed = True
-                else:
+            confirmed = False
+            if data2:
+                p2_str = str(data2.get("players", "0"))
+                p2 = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
+                if p2 < prev * (1 - drop_pct):
                     confirmed = True
-                if confirmed:
-                    if name not in self._alerted or is_override:
-                        if is_override:
-                            self._alerted.pop(name, None)
-                            self._stable_count.pop(name, None)
-                        self._push_alert(grp, name, anomaly[0], anomaly[1])
-                        self._alerted[name] = anomaly[0]
-                    if p == 0 and not was_zero and anomaly[0] == "正在重启":
-                        self._was_zero[name] = True
-            if name in self._alerted:
-                if p > min_p:
-                    cnt = self._stable_count.get(name, 0) + 1
-                    self._stable_count[name] = cnt
-                    if cnt >= 3:
+            else:
+                confirmed = True
+            if confirmed:
+                if name not in self._alerted or is_override:
+                    if is_override:
                         self._alerted.pop(name, None)
                         self._stable_count.pop(name, None)
-                else:
+                    self._push_alert(grp, name, anomaly[0], anomaly[1])
+                    self._alerted[name] = anomaly[0]
+                if p == 0 and not was_zero and anomaly[0] == "正在重启":
+                    self._was_zero[name] = True
+        if name in self._alerted:
+            if p > min_p:
+                cnt = self._stable_count.get(name, 0) + 1
+                self._stable_count[name] = cnt
+                if cnt >= 3:
+                    self._alerted.pop(name, None)
                     self._stable_count.pop(name, None)
-            if p > 0 and was_zero:
-                self._was_zero[name] = False
-            self.last_player_counts[name] = {"p": p, "m": max_p}
-        self._update_adaptive_interval()
+            else:
+                self._stable_count.pop(name, None)
+        if p > 0 and was_zero:
+            self._was_zero[name] = False
+        self.last_player_counts[name] = {"p": p, "m": max_p}
 
     def _update_adaptive_interval(self):
         if self._adaptive_locked or not self.server_history:
@@ -772,15 +794,7 @@ class douUniversalServerPlugin(Star):
             try:
                 resp = await self._bot.api.call_action("send_group_msg", group_id=int(group_id),
                     message=[{"type": "text", "data": {"text": text}}])
-                msg_id = None
-                if isinstance(resp, dict):
-                    data = resp.get("data") or resp
-                    if isinstance(data, dict):
-                        msg_id = data.get("message_id")
-                    elif isinstance(data, int):
-                        msg_id = data
-                if msg_id is None and isinstance(resp, dict):
-                    msg_id = resp.get("message_id")
+                msg_id = self._extract_msg_id(resp)
                 if msg_id is not None:
                     msg_id = int(msg_id)
                     await asyncio.sleep(self.retract_seconds)
@@ -792,7 +806,20 @@ class douUniversalServerPlugin(Star):
             except Exception as e:
                 logger.debug(f"non-critical: {e}")
                 pass
-        asyncio.create_task(_send_and_retract())
+        self._create_tracked_task(_send_and_retract())
+
+    @staticmethod
+    def _extract_msg_id(resp) -> int | None:
+        """从OneBot send_msg响应中提取message_id"""
+        if isinstance(resp, dict):
+            data = resp.get("data") or resp
+            if isinstance(data, dict):
+                return data.get("message_id")
+            elif isinstance(data, int):
+                return data
+        if isinstance(resp, dict):
+            return resp.get("message_id")
+        return None
 
     def _schedule_retract(self, bot, msg_id: int, img_path: str = None):
         """通用撤回+可选的临时文件清理"""
@@ -810,7 +837,7 @@ class douUniversalServerPlugin(Star):
                     except Exception as e:
                         logger.debug(f"non-critical: {e}")
                         pass
-        asyncio.create_task(_retract())
+        self._create_tracked_task(_retract())
 
     async def _report_loop(self):
         await asyncio.sleep(10)
@@ -862,7 +889,7 @@ class douUniversalServerPlugin(Star):
                 except Exception as e:
                     logger.debug(f"non-critical: {e}")
                     pass
-        asyncio.create_task(_send())
+        self._create_tracked_task(_send())
 
     def _send_telegram(self, text: str, img_path: str = None):
         token = GLOBAL_DATA.get("telegram_bot_token", "")
@@ -892,7 +919,7 @@ class douUniversalServerPlugin(Star):
                     except Exception as e:
                         logger.debug(f"non-critical: {e}")
                         pass
-        asyncio.create_task(_tg())
+        self._create_tracked_task(_tg())
 
     def _build_stats_image(self, group_name: str, period: str) -> str:
         now = datetime.now()
@@ -953,7 +980,7 @@ class douUniversalServerPlugin(Star):
 
     def _reply_at(self, event, text):
         if event.get_platform_name() == "aiocqhttp":
-            asyncio.create_task(self._send_onebot_and_retract(event, text))
+            self._create_tracked_task(self._send_onebot_and_retract(event, text))
             return
         if event.is_private_chat():
             yield event.plain_result(text)
@@ -973,15 +1000,7 @@ class douUniversalServerPlugin(Star):
             else:
                 group_id = int(event.message_obj.group_id)
                 resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=msg_array)
-            msg_id = None
-            if isinstance(resp, dict):
-                data = resp.get("data") or resp
-                if isinstance(data, dict):
-                    msg_id = data.get("message_id")
-                elif isinstance(data, int):
-                    msg_id = data
-            if msg_id is None and isinstance(resp, dict):
-                msg_id = resp.get("message_id")
+            msg_id = self._extract_msg_id(resp)
             if msg_id is not None:
                 msg_id = int(msg_id)
                 bot = event.bot
@@ -992,7 +1011,7 @@ class douUniversalServerPlugin(Star):
                     except Exception as e:
                         logger.debug(f"non-critical: {e}")
                         pass
-                asyncio.create_task(_retract())
+                self._create_tracked_task(_retract())
         except Exception as e:
             logger.warning(f"[服务器框架] OneBot发送/撤回失败: {e}")
 
@@ -1179,14 +1198,11 @@ class douUniversalServerPlugin(Star):
                     group_id = int(event.message_obj.group_id)
                     img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                     resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
-                    msg_id = None
-                    if isinstance(resp, dict):
-                        d = resp.get("data") or resp
-                        msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
+                    msg_id = self._extract_msg_id(resp)
                     if msg_id is not None:
                         self._schedule_retract(event.bot, int(msg_id), img_path)
                 else:
-                    asyncio.create_task(self._gc_file(img_path))
+                    self._create_tracked_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
             except Exception:
                 for chunk in self._reply_at(event, "发送图片失败"):
@@ -1252,7 +1268,8 @@ class douUniversalServerPlugin(Star):
         img.save(path, "PNG")
         return path
 
-    def _parse_html_color(self, html: str):
+    @staticmethod
+    def _parse_html_color(html: str):
         result = []
         pattern = re.compile(r'<span style="color:(#[0-9A-Fa-f]+)">([^<]*)</span>')
         pos = 0
@@ -1414,7 +1431,7 @@ class douUniversalServerPlugin(Star):
         GLOBAL_DATA["servers"].append({"id": sid, "group": group_name, "default_name": default_name, "display_name": display_name})
         if group_name not in GLOBAL_DATA["group_headers"]:
             GLOBAL_DATA["group_headers"][group_name] = [f"--- {group_name} 状态 ---", "=============="]
-        save_server_data(GLOBAL_DATA)
+        await self._atomic_save()
         self.toggle_state[_get_toggle_key(group_name, default_name)] = True
         save_toggle_state(self.toggle_state)
         await self._force_refresh_all()
@@ -1438,7 +1455,7 @@ class douUniversalServerPlugin(Star):
                 break
         if idx != -1:
             removed = GLOBAL_DATA["servers"].pop(idx)
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             t_key = _get_toggle_key(group_name, target_name)
             if t_key in self.toggle_state:
                 self.toggle_state.pop(t_key)
@@ -1473,7 +1490,7 @@ class douUniversalServerPlugin(Star):
             return
         GLOBAL_DATA["servers"] = [s for s in GLOBAL_DATA["servers"] if s["group"] != gname]
         GLOBAL_DATA["group_headers"].pop(gname, None)
-        save_server_data(GLOBAL_DATA)
+        await self._atomic_save()
         await self._force_refresh_all()
         for chunk in self._reply_at(event, f"已删除组【{gname}】及其下所有服务器。"):
             yield chunk
@@ -1496,7 +1513,7 @@ class douUniversalServerPlugin(Star):
         if "group_headers" not in GLOBAL_DATA:
             GLOBAL_DATA["group_headers"] = {}
         GLOBAL_DATA["group_headers"][group_name] = headers_list
-        save_server_data(GLOBAL_DATA)
+        await self._atomic_save()
         await self._force_refresh_all()
         for chunk in self._reply_at(event, f" 组【{group_name}】的报头渲染模板更新完毕！"):
             yield chunk
@@ -1518,7 +1535,7 @@ class douUniversalServerPlugin(Star):
                 found = True
                 break
         if found:
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             await self._force_refresh_all()
             for chunk in self._reply_at(event, f" 组【{group_name}】内服务器【{target_name}】的API_ID已变更为：{new_id}"):
                 yield chunk
@@ -1543,7 +1560,7 @@ class douUniversalServerPlugin(Star):
                 found = True
                 break
         if found:
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             await self._force_refresh_all()
             for chunk in self._reply_at(event, f" 组【{group_name}】内服务器【{target_name}】的展现别名已变更为：{new_display}"):
                 yield chunk
@@ -1573,7 +1590,7 @@ class douUniversalServerPlugin(Star):
         if found:
             if new_group not in GLOBAL_DATA["group_headers"]:
                 GLOBAL_DATA["group_headers"][new_group] = [f"--- {new_group} 状态 ---", "=============="]
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             save_toggle_state(self.toggle_state)
             await self._force_refresh_all()
             for chunk in self._reply_at(event, f" 成功跨组迁移：服务器【{target_name}】已移入【{new_group}】"):
@@ -1680,7 +1697,7 @@ class douUniversalServerPlugin(Star):
                 raise ValueError
             GLOBAL_DATA["refresh_interval_min"] = imin
             GLOBAL_DATA["refresh_interval_max"] = imax
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             self.current_interval = imin
             out = f"已设定固定轮询速率：{imin}s" if imin == imax else f"已设定动态轮询区间：{imin}s - {imax}s"
             for chunk in self._reply_at(event, out):
@@ -1885,9 +1902,7 @@ class douUniversalServerPlugin(Star):
                 group_id = int(event.message_obj.group_id)
                 img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                 resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
-                msg_id = None
-                if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
-                    msg_id = resp["data"].get("message_id")
+                msg_id = self._extract_msg_id(resp)
                 if msg_id:
                     msg_id = int(msg_id) if msg_id is not None else None
                     self._schedule_retract(event.bot, msg_id, img_path)
@@ -1948,15 +1963,11 @@ class douUniversalServerPlugin(Star):
                     group_id = int(event.message_obj.group_id)
                     img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                     resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
-                    msg_id = None
-                    if isinstance(resp, dict):
-                        d = resp.get("data") or resp
-                        msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
+                    msg_id = self._extract_msg_id(resp)
                     if msg_id is not None:
-                        msg_id = int(msg_id)
-                        self._schedule_retract(event.bot, msg_id, img_path)
+                        self._schedule_retract(event.bot, int(msg_id), img_path)
                 else:
-                    asyncio.create_task(self._gc_file(img_path))
+                    self._create_tracked_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
             except Exception as e:
                 logger.warning(f"[服务器框架] 发送统计图片失败: {e}")
@@ -2004,9 +2015,7 @@ class douUniversalServerPlugin(Star):
                 group_id = int(event.message_obj.group_id)
                 img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                 resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
-                msg_id = None
-                if isinstance(resp, dict) and "data" in resp and isinstance(resp["data"], dict):
-                    msg_id = resp["data"].get("message_id")
+                msg_id = self._extract_msg_id(resp)
                 if msg_id is not None:
                     msg_id = int(msg_id)
                     self._schedule_retract(event.bot, msg_id, img_path)
@@ -2092,7 +2101,7 @@ class douUniversalServerPlugin(Star):
             self.alert_min_players = nf
             GLOBAL_DATA["alert_drop_pct"] = np
             GLOBAL_DATA["alert_min_players"] = nf
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, f"告警阈值已设为：降幅>{np}% 且 >{nf}人（一次有效）"):
                 yield chunk
         except ValueError:
@@ -2108,7 +2117,7 @@ class douUniversalServerPlugin(Star):
             self._adaptive_locked = False
             self.history_interval = GLOBAL_DATA.get("history_interval", 120)
             self.cache_ttl = GLOBAL_DATA.get("cache_ttl", 60)
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, "狂暴模式已关闭 恢复自适应"):
                 yield chunk
             return
@@ -2125,7 +2134,7 @@ class douUniversalServerPlugin(Star):
         self._adaptive_locked = True
         GLOBAL_DATA["history_interval"] = 10
         GLOBAL_DATA["cache_ttl"] = 5
-        save_server_data(GLOBAL_DATA)
+        await self._atomic_save()
         for chunk in self._reply_at(event, "狂暴模式已开启 每10秒请求\n/狂暴模式 关闭 退出"):
             yield chunk
 
@@ -2143,7 +2152,7 @@ class douUniversalServerPlugin(Star):
             self._adaptive_locked = False
             GLOBAL_DATA.pop("history_interval", None)
             GLOBAL_DATA.pop("cache_ttl", None)
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, "已恢复自适应频率"):
                 yield chunk
             return
@@ -2155,7 +2164,7 @@ class douUniversalServerPlugin(Star):
             self.cache_ttl = max(30, t // 2)
             GLOBAL_DATA["history_interval"] = t
             GLOBAL_DATA["cache_ttl"] = self.cache_ttl
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             self._adaptive_locked = True
             for chunk in self._reply_at(event, f"轮询间隔已设为 {t}s，缓存TTL {self.cache_ttl}s（自适应已停用）"):
                 yield chunk
@@ -2178,7 +2187,7 @@ class douUniversalServerPlugin(Star):
                 raise ValueError
             self.retract_seconds = t
             GLOBAL_DATA["retract_seconds"] = t
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, f"消息撤回时间已设为 {t} 秒"):
                 yield chunk
         except ValueError:
@@ -2344,12 +2353,12 @@ class douUniversalServerPlugin(Star):
         if arg.startswith("chat "):
             chat_id = arg[5:].strip()
             GLOBAL_DATA["telegram_chat_id"] = chat_id
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, f"Telegram Chat ID 已设为 {chat_id}"):
                 yield chunk
         else:
             GLOBAL_DATA["telegram_bot_token"] = arg
-            save_server_data(GLOBAL_DATA)
+            await self._atomic_save()
             for chunk in self._reply_at(event, f"Telegram Bot Token 已设置"):
                 yield chunk
 
@@ -2374,7 +2383,7 @@ class douUniversalServerPlugin(Star):
                             if data.get("ok") and data.get("result"):
                                 for upd in data["result"]:
                                     offset = upd["update_id"] + 1
-                                    asyncio.create_task(self._tg_handle_update(upd, token))
+                                    self._create_tracked_task(self._tg_handle_update(upd, token))
                 except Exception:
                     await asyncio.sleep(5)
 
@@ -2562,7 +2571,7 @@ class douUniversalServerPlugin(Star):
                     img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
                     resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
                 else:
-                    asyncio.create_task(self._gc_file(img_path))
+                    self._create_tracked_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
                 await asyncio.sleep(0.3)
             except Exception as e:
@@ -2579,6 +2588,11 @@ class douUniversalServerPlugin(Star):
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+        for task in list(self._pending_tasks):
+            if not task.done():
+                task.cancel()
+        if self._pending_tasks:
+            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
         if self._errlog_dirty:
             try:
                 save_error_logs(self.error_logs)
@@ -2603,6 +2617,18 @@ class douUniversalServerPlugin(Star):
             except Exception as e:
                 logger.debug(f"non-critical: {e}")
                 pass
+        if self._raw_dirty and hasattr(self, '_raw_data'):
+            try:
+                save_raw_responses(self._raw_data)
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
+                pass
+        if self._plogs_dirty and hasattr(self, '_plog_data'):
+            try:
+                save_player_logs(self._plog_data)
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
+                pass
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
                 await self.session.close()
@@ -2611,9 +2637,13 @@ class douUniversalServerPlugin(Star):
                 pass
 
     def __del__(self):
+        """尽力关闭session——event loop可能已死，吞掉所有异常"""
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
-                asyncio.ensure_future(self.session.close())
-            except Exception as e:
-                logger.debug(f"non-critical: {e}")
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self.session.close())
+                else:
+                    loop.run_until_complete(self.session.close())
+            except Exception:
                 pass
