@@ -713,19 +713,30 @@ class UniversalServerPlugin(Star):
         self._update_adaptive_interval()
 
     def _update_adaptive_interval(self):
-        if not self.last_player_counts:
+        if not self.server_history:
             return
-        total_players = sum(self.last_player_counts.values())
-        count = len(self.last_player_counts)
-        avg = total_players / count if count > 0 else 0
-        if avg >= 40:
+        all_recent = []
+        for entries in self.server_history.values():
+            recent = entries[-10:]
+            for e in recent:
+                all_recent.append(e.get("players", 0))
+        if not all_recent:
+            return
+        all_recent.sort()
+        n = len(all_recent)
+        top3 = all_recent[-max(1, n//3):] if n >= 3 else all_recent
+        peak_avg = sum(top3) / len(top3)
+        vol = sum(1 for v in all_recent if v > 5) / n
+        if peak_avg >= 45 and vol > 0.6:
             self.history_interval, self.cache_ttl = 60, 30
-        elif avg >= 20:
-            self.history_interval, self.cache_ttl = 120, 60
-        elif avg >= 5:
+        elif peak_avg >= 25 and vol > 0.4:
+            self.history_interval, self.cache_ttl = 90, 45
+        elif peak_avg >= 10 and vol > 0.2:
             self.history_interval, self.cache_ttl = 180, 90
-        else:
+        elif peak_avg >= 3:
             self.history_interval, self.cache_ttl = 300, 150
+        else:
+            self.history_interval, self.cache_ttl = 600, 300
 
     def _push_alert(self, group_name, name, alert_type, msg):
         key = f"{name}::{alert_type}"
