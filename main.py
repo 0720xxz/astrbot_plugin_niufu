@@ -120,7 +120,8 @@ class douUniversalServerPlugin(Star):
                                     self._cache_dirty = True
                                     self._store_raw_response(sid, data)
                                     return data
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"non-critical: {e}")
                             pass
                     return cached_data
         try:
@@ -179,7 +180,8 @@ class douUniversalServerPlugin(Star):
         await asyncio.sleep(delay)
         try:
             os.unlink(path)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
             pass
 
     def _save_history(self, display_name: str, players, max_players):
@@ -194,7 +196,8 @@ class douUniversalServerPlugin(Star):
                     prev = datetime.strptime(last, "%Y-%m-%d %H:%M:%S")
                     if (now - prev).total_seconds() < self.history_interval:
                         return
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"non-critical: {e}")
                     pass
         p = int(str(players).split("/")[0]) if players else 0
         m = max_players if max_players is not None else (int(str(players).split("/")[1]) if players and "/" in str(players) else 0)
@@ -566,7 +569,8 @@ class douUniversalServerPlugin(Star):
             for g in groups:
                 try:
                     new_cache[g] = await asyncio.wait_for(self._build_group_info(g), timeout=30)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"non-critical: {e}")
                     pass
             if new_cache:
                 self.cache.update(new_cache)
@@ -581,7 +585,8 @@ class douUniversalServerPlugin(Star):
             groups = set(s["group"] for s in GLOBAL_DATA["servers"])
             for g in groups:
                 self.cache[g] = await self._build_group_info(g)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
             pass
 
     def start_background_tasks(self):
@@ -596,7 +601,8 @@ class douUniversalServerPlugin(Star):
         while True:
             try:
                 await self._check_alerts()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
             if self._raw_dirty and hasattr(self, '_raw_data'):
                 save_raw_responses(self._raw_data)
@@ -780,9 +786,11 @@ class douUniversalServerPlugin(Star):
                     await asyncio.sleep(self.retract_seconds)
                     try:
                         await self._bot.api.call_action("delete_msg", message_id=msg_id)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"non-critical: {e}")
                         pass
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
         asyncio.create_task(_send_and_retract())
 
@@ -792,13 +800,15 @@ class douUniversalServerPlugin(Star):
             await asyncio.sleep(self.retract_seconds)
             try:
                 await bot.api.call_action("delete_msg", message_id=msg_id)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
             finally:
                 if img_path:
                     try:
                         os.unlink(img_path)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"non-critical: {e}")
                         pass
         asyncio.create_task(_retract())
 
@@ -843,12 +853,14 @@ class douUniversalServerPlugin(Star):
                 if caption:
                     msg.insert(0, {"type": "text", "data": {"text": caption + "\n"}})
                 await self._bot.api.call_action("send_group_msg", group_id=int(group_id), message=msg)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
             finally:
                 try:
                     os.unlink(img_path)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"non-critical: {e}")
                     pass
         asyncio.create_task(_send())
 
@@ -870,13 +882,15 @@ class douUniversalServerPlugin(Star):
                     await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
                 else:
                     await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
             finally:
                 if img_path:
                     try:
                         os.unlink(img_path)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"non-critical: {e}")
                         pass
         asyncio.create_task(_tg())
 
@@ -975,7 +989,8 @@ class douUniversalServerPlugin(Star):
                     await asyncio.sleep(self.retract_seconds)
                     try:
                         await bot.api.call_action("delete_msg", message_id=msg_id)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"non-critical: {e}")
                         pass
                 asyncio.create_task(_retract())
         except Exception as e:
@@ -2476,7 +2491,8 @@ class douUniversalServerPlugin(Star):
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             session = await self._get_session()
             await session.post(url, json={"chat_id": chat_id, "text": text[:4000]}, timeout=aiohttp.ClientTimeout(total=10))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
             pass
 
     async def _tg_send_photo(self, token: str, chat_id, img_path: str, caption: str = ""):
@@ -2490,7 +2506,8 @@ class douUniversalServerPlugin(Star):
             form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
             session = await self._get_session()
             await session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
-        except Exception:
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
             pass
 
     @filter.command("debug")
@@ -2548,7 +2565,8 @@ class douUniversalServerPlugin(Star):
                     asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
                 await asyncio.sleep(0.3)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
 
     async def teardown(self):
@@ -2564,32 +2582,38 @@ class douUniversalServerPlugin(Star):
         if self._errlog_dirty:
             try:
                 save_error_logs(self.error_logs)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
         if self._cmdlog_dirty:
             try:
                 save_command_logs(self.command_logs)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
         if self._cache_dirty:
             try:
                 save_server_cache(self.server_cache)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
         if self._h_dirty:
             try:
                 save_server_history(self.server_history)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
                 await self.session.close()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
 
     def __del__(self):
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
                 asyncio.ensure_future(self.session.close())
-            except Exception:
+            except Exception as e:
+                logger.debug(f"non-critical: {e}")
                 pass
