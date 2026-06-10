@@ -956,11 +956,11 @@ class UniversalServerPlugin(Star):
                 return
             return
         registered_commands = [
-            "/查服", "/ip", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组",
+            "/查服", "/ip", "/info", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/告警设置", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/info", "/告警设置", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -1060,6 +1060,44 @@ class UniversalServerPlugin(Star):
         target_group = msg[1].strip() if len(msg) > 1 else None
         data = await self._build_ip_info(target_group)
         for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
+
+    @filter.command("info")
+    async def info_cmd(self, event: AstrMessageEvent):
+        if self._is_blacklisted(event): return
+        self._log_command(event, "/info")
+        self._trigger_active_refresh()
+        msg = event.get_message_str().strip().split(maxsplit=1)
+        target_group = msg[1].strip() if len(msg) > 1 else None
+        if target_group:
+            groups = [g for g in set(s["group"] for s in GLOBAL_DATA["servers"]) if target_group in g] or [target_group]
+        else:
+            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
+        servers = [s for s in GLOBAL_DATA["servers"] if s["group"] in groups and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+        if not servers:
+            for chunk in self._reply_at(event, "暂无启用的服务器。"):
+                yield chunk
+            return
+        lines = []
+        for g in groups:
+            g_servers = [s for s in servers if s["group"] == g]
+            if not g_servers:
+                continue
+            lines.append(f"--- {g} INFO ---")
+            urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in g_servers]
+            results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
+            for s, data in zip(g_servers, results):
+                if data:
+                    info = re.sub(r'<[^>]+>', '', data.get("info", "")).strip()
+                    info = re.sub(r'\s+', ' ', info)
+                    players = data.get("players", "?/?")
+                    online = data.get("online", False)
+                    status = f"{players}" if online else "离线"
+                    lines.append(f"{s['display_name']} [{status}]")
+                    lines.append(f"  {info}")
+                else:
+                    lines.append(f"{s['display_name']} 离线")
+        for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
 
     @filter.command("help")
