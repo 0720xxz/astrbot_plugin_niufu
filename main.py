@@ -222,6 +222,7 @@ class UniversalServerPlugin(Star):
         self.alert_drop_pct = GLOBAL_DATA.get("alert_drop_pct", 50)
         self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
         self._was_zero: dict[str, bool] = {}
+        self._adaptive_locked = False
         self.alert_task = None
         self.report_task = None
         self._bot = None
@@ -713,7 +714,7 @@ class UniversalServerPlugin(Star):
         self._update_adaptive_interval()
 
     def _update_adaptive_interval(self):
-        if not self.server_history:
+        if self._adaptive_locked or not self.server_history:
             return
         all_recent = []
         for entries in self.server_history.values():
@@ -2097,7 +2098,16 @@ class UniversalServerPlugin(Star):
             return
         parts = event.get_message_str().strip().split()
         if len(parts) < 2:
-            for chunk in self._reply_at(event, f"用法：/轮询间隔 <秒>\n当前：记录间隔{self.history_interval}s 缓存TTL{self.cache_ttl}s\n自适应范围60-300s"):
+            locked = "（手动锁定）" if self._adaptive_locked else "（自适应）"
+            for chunk in self._reply_at(event, f"用法：/轮询间隔 <秒> 或 /轮询间隔 auto\n当前：记录间隔{self.history_interval}s 缓存TTL{self.cache_ttl}s{locked}"):
+                yield chunk
+            return
+        if parts[1].strip().lower() == "auto":
+            self._adaptive_locked = False
+            GLOBAL_DATA.pop("history_interval", None)
+            GLOBAL_DATA.pop("cache_ttl", None)
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, "已恢复自适应频率"):
                 yield chunk
             return
         try:
@@ -2109,7 +2119,8 @@ class UniversalServerPlugin(Star):
             GLOBAL_DATA["history_interval"] = t
             GLOBAL_DATA["cache_ttl"] = self.cache_ttl
             save_server_data(GLOBAL_DATA)
-            for chunk in self._reply_at(event, f"轮询间隔已设为 {t}s，缓存TTL {self.cache_ttl}s"):
+            self._adaptive_locked = True
+            for chunk in self._reply_at(event, f"轮询间隔已设为 {t}s，缓存TTL {self.cache_ttl}s（自适应已停用）"):
                 yield chunk
         except ValueError:
             for chunk in self._reply_at(event, "请输入 30-600 之间的整数。"):
@@ -2319,12 +2330,15 @@ class UniversalServerPlugin(Star):
             return
         self._log_command(event, "/debug")
         results = ["[DEBUG] 指令自检开始", "================"]
+        gs = list(set(x["group"] for x in GLOBAL_DATA["servers"]))
+        first_group = gs[0] if gs else "牛"
+        niu_groups = list(dict.fromkeys([x["group"] for x in GLOBAL_DATA["servers"] if "牛" in x["group"]])) or ["牛"]
         tests = [
-            ("/牛服", lambda: self._build_aggregated_info(list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]])) or ["牛"])),
-            ("/查服", lambda: self._build_group_info(list(set(s["group"] for s in GLOBAL_DATA["servers"]))[0])),
+            ("/牛服", lambda: self._build_aggregated_info(niu_groups)),
+            ("/查服", lambda: self._build_group_info(first_group)),
             ("/ip", lambda: self._build_ip_info()),
-            ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, list(set(s["group"] for s in GLOBAL_DATA["servers"])))),
-            ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, list(set(s["group"] for s in GLOBAL_DATA["servers"]))[0], "一天")),
+            ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, gs)),
+            ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, first_group, "一天")),
             ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), load_command_logs()[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
             ("/niulog", lambda: self.error_logs),
             ("缓存", lambda: self.server_cache),
