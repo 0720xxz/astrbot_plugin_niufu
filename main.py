@@ -277,19 +277,25 @@ class douUniversalServerPlugin(Star):
             entry = self.server_cache[cache_key]
             age = now_ts - entry.get("ts", 0)
             if age < self.cache_ttl:
-                if age > self.cache_ttl * 0.4:
-                    try:
-                        session = await self._get_session()
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                self.server_cache[cache_key] = {"ts": now_ts, "data": data}
-                                self._cache_dirty = True
-                                self._store_raw_response(sid, data)
-                                return data
-                    except Exception:
-                        pass
-                return entry.get("data")
+                cached_data = entry.get("data")
+                if cached_data:
+                    cp = str(cached_data.get("players", ""))
+                    if cp == "0" or cp.startswith("0/"):
+                        cached_data = None
+                if cached_data is not None:
+                    if age > self.cache_ttl * 0.4:
+                        try:
+                            session = await self._get_session()
+                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                                if resp.status == 200:
+                                    data = await resp.json()
+                                    self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                                    self._cache_dirty = True
+                                    self._store_raw_response(sid, data)
+                                    return data
+                        except Exception:
+                            pass
+                    return cached_data
         try:
             session = await self._get_session()
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -779,10 +785,8 @@ class douUniversalServerPlugin(Star):
                 if data is not None:
                     break
                 await asyncio.sleep(3)
-            if data is not None and cached_data is not None:
-                cp = str(cached_data.get("players", ""))
-                dp = str(data.get("players", ""))
-                if cp != dp or cached_data.get("online") != data.get("online"):
+            if data is not None:
+                if cached_data is None or str(cached_data.get("players", "")) != str(data.get("players", "")) or cached_data.get("online") != data.get("online"):
                     self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
                     self._cache_dirty = True
             if data is None:
