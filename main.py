@@ -784,6 +784,22 @@ class douUniversalServerPlugin(Star):
                 pass
         asyncio.create_task(_send_and_retract())
 
+    def _schedule_retract(self, bot, msg_id: int, img_path: str = None):
+        """通用撤回+可选的临时文件清理"""
+        async def _retract():
+            await asyncio.sleep(self.retract_seconds)
+            try:
+                await bot.api.call_action("delete_msg", message_id=msg_id)
+            except Exception:
+                pass
+            finally:
+                if img_path:
+                    try:
+                        os.unlink(img_path)
+                    except Exception:
+                        pass
+        asyncio.create_task(_retract())
+
     async def _report_loop(self):
         await asyncio.sleep(10)
         while True:
@@ -1042,28 +1058,24 @@ class douUniversalServerPlugin(Star):
                     event.stop_event()
                     return
 
+    async def _query_by_keyword(self, event: AstrMessageEvent, keyword: str, fallback: str, cmd: str):
+        if self._is_blacklisted(event): return
+        self._log_command(event, cmd)
+        self._trigger_active_refresh()
+        groups = [s["group"] for s in GLOBAL_DATA["servers"] if keyword in s["group"]]
+        groups = list(dict.fromkeys(groups)) or [fallback]
+        data = await self._build_aggregated_info(groups)
+        for chunk in self._reply_at(event, "\n".join(data)):
+            yield chunk
+
     @filter.command("牛服")
     async def cmd_niufu(self, event: AstrMessageEvent):
-        if self._is_blacklisted(event): return
-        self._log_command(event, "/牛服")
-        self._trigger_active_refresh()
-        niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
-        if not niufu_groups:
-            niufu_groups = ["牛"]
-        data = await self._build_aggregated_info(niufu_groups)
-        for chunk in self._reply_at(event, "\n".join(data)):
+        async for chunk in self._query_by_keyword(event, "牛", "牛", "/牛服"):
             yield chunk
 
     @filter.command("鸽服")
     async def cmd_pigeon(self, event: AstrMessageEvent):
-        if self._is_blacklisted(event): return
-        self._log_command(event, "/鸽服")
-        self._trigger_active_refresh()
-        ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
-        if not ge_groups:
-            ge_groups = ["鸽"]
-        data = await self._build_aggregated_info(ge_groups)
-        for chunk in self._reply_at(event, "\n".join(data)):
+        async for chunk in self._query_by_keyword(event, "鸽", "鸽", "/鸽服"):
             yield chunk
 
     @filter.command("查服")
@@ -1155,20 +1167,7 @@ class douUniversalServerPlugin(Star):
                         d = resp.get("data") or resp
                         msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
                     if msg_id is not None:
-                        msg_id = int(msg_id)
-                        bot = event.bot
-                        async def _retract_info():
-                            await asyncio.sleep(self.retract_seconds)
-                            try:
-                                await bot.api.call_action("delete_msg", message_id=msg_id)
-                            except Exception:
-                                pass
-                            finally:
-                                try:
-                                    os.unlink(img_path)
-                                except Exception:
-                                    pass
-                        asyncio.create_task(_retract_info())
+                        self._schedule_retract(event.bot, int(msg_id), img_path)
                 else:
                     asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
@@ -1321,13 +1320,15 @@ class douUniversalServerPlugin(Star):
             yield chunk
 
     @filter.command("开启无斜杠")
-    async def enable_noslash(self, event: AstrMessageEvent):
+    async def _set_noslash(self, event: AstrMessageEvent, enable: bool):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split()
+        action_cn = "开启" if enable else "关闭"
+        cmd = f"/{action_cn}无斜杠"
         if len(parts) < 2:
             groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
-            for chunk in self._reply_at(event, f"用法：/开启无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
+            for chunk in self._reply_at(event, f"用法：{cmd} <组名>\n可用组名：{', '.join(groups)}"):
                 yield chunk
             return
         group_name = parts[1].strip()
@@ -1335,29 +1336,19 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f" 组【{group_name}】不存在。"):
                 yield chunk
             return
-        self.group_noslash[group_name] = True
+        self.group_noslash[group_name] = enable
         save_group_noslash(self.group_noslash)
-        for chunk in self._reply_at(event, f" 已开启组【{group_name}】的无斜杠直接触发。"):
+        for chunk in self._reply_at(event, f" 已{action_cn}组【{group_name}】的无斜杠直接触发。"):
+            yield chunk
+
+    @filter.command("开启无斜杠")
+    async def enable_noslash(self, event: AstrMessageEvent):
+        async for chunk in self._set_noslash(event, True):
             yield chunk
 
     @filter.command("关闭无斜杠")
     async def disable_noslash(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            return
-        parts = event.get_message_str().strip().split()
-        if len(parts) < 2:
-            groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
-            for chunk in self._reply_at(event, f"用法：/关闭无斜杠 <组名>\n可用组名：{', '.join(groups)}"):
-                yield chunk
-            return
-        group_name = parts[1].strip()
-        if group_name not in set(s["group"] for s in GLOBAL_DATA["servers"]):
-            for chunk in self._reply_at(event, f" 组【{group_name}】不存在。"):
-                yield chunk
-            return
-        self.group_noslash[group_name] = False
-        save_group_noslash(self.group_noslash)
-        for chunk in self._reply_at(event, f" 已关闭组【{group_name}】的无斜杠直接触发。"):
+        async for chunk in self._set_noslash(event, False):
             yield chunk
 
     @filter.command("查看所有服")
@@ -1784,39 +1775,32 @@ class douUniversalServerPlugin(Star):
                 yield chunk
 
     @filter.command("开启模糊匹配")
-    async def enable_fuzzy_match(self, event: AstrMessageEvent):
+    async def _set_fuzzy(self, event: AstrMessageEvent, enable: bool):
         if not await self._is_admin(event):
             return
+        action_cn = "开启" if enable else "关闭"
         msg_parts = event.get_message_str().strip().split()
         if len(msg_parts) == 1:
             if event.is_private_chat():
-                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/开启模糊匹配 <群号>"):
+                for chunk in self._reply_at(event, f"该命令需要在群聊中使用，或指定群号：/{action_cn}模糊匹配 <群号>"):
                     yield chunk
                 return
             group_id = str(event.message_obj.group_id)
         else:
             group_id = msg_parts[1].strip()
-        self.fuzzy_toggle[group_id] = True
+        self.fuzzy_toggle[group_id] = enable
         save_fuzzy_toggle(self.fuzzy_toggle)
-        for chunk in self._reply_at(event, f" 群 {group_id} 已开启模糊匹配。"):
+        for chunk in self._reply_at(event, f" 群 {group_id} 已{action_cn}模糊匹配。"):
+            yield chunk
+
+    @filter.command("开启模糊匹配")
+    async def enable_fuzzy_match(self, event: AstrMessageEvent):
+        async for chunk in self._set_fuzzy(event, True):
             yield chunk
 
     @filter.command("关闭模糊匹配")
     async def disable_fuzzy_match(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            return
-        msg_parts = event.get_message_str().strip().split()
-        if len(msg_parts) == 1:
-            if event.is_private_chat():
-                for chunk in self._reply_at(event, "该命令需要在群聊中使用，或指定群号：/关闭模糊匹配 <群号>"):
-                    yield chunk
-                return
-            group_id = str(event.message_obj.group_id)
-        else:
-            group_id = msg_parts[1].strip()
-        self.fuzzy_toggle[group_id] = False
-        save_fuzzy_toggle(self.fuzzy_toggle)
-        for chunk in self._reply_at(event, f" 群 {group_id} 已关闭模糊匹配。"):
+        async for chunk in self._set_fuzzy(event, False):
             yield chunk
 
     @filter.command("niulog")
@@ -1889,19 +1873,7 @@ class douUniversalServerPlugin(Star):
                     msg_id = resp["data"].get("message_id")
                 if msg_id:
                     msg_id = int(msg_id) if msg_id is not None else None
-                    bot = event.bot
-                    async def _retract_img():
-                        await asyncio.sleep(self.retract_seconds)
-                        try:
-                            await bot.api.call_action("delete_msg", message_id=msg_id)
-                        except Exception:
-                            pass
-                        finally:
-                            try:
-                                os.unlink(img_path)
-                            except Exception:
-                                pass
-                    asyncio.create_task(_retract_img())
+                    self._schedule_retract(event.bot, msg_id, img_path)
             else:
                 yield event.image_result(img_path)
         except Exception as e:
@@ -1965,19 +1937,7 @@ class douUniversalServerPlugin(Star):
                         msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
                     if msg_id is not None:
                         msg_id = int(msg_id)
-                        bot = event.bot
-                        async def _retract_s():
-                            await asyncio.sleep(self.retract_seconds)
-                            try:
-                                await bot.api.call_action("delete_msg", message_id=msg_id)
-                            except Exception:
-                                pass
-                            finally:
-                                try:
-                                    os.unlink(img_path)
-                                except Exception:
-                                    pass
-                        asyncio.create_task(_retract_s())
+                        self._schedule_retract(event.bot, msg_id, img_path)
                 else:
                     asyncio.create_task(self._gc_file(img_path))
                     yield event.image_result(img_path)
@@ -2032,19 +1992,7 @@ class douUniversalServerPlugin(Star):
                     msg_id = resp["data"].get("message_id")
                 if msg_id is not None:
                     msg_id = int(msg_id)
-                    bot = event.bot
-                    async def _retract_log():
-                        await asyncio.sleep(self.retract_seconds)
-                        try:
-                            await bot.api.call_action("delete_msg", message_id=msg_id)
-                        except Exception:
-                            pass
-                        finally:
-                            try:
-                                os.unlink(img_path)
-                            except Exception:
-                                pass
-                    asyncio.create_task(_retract_log())
+                    self._schedule_retract(event.bot, msg_id, img_path)
             else:
                 yield event.image_result(img_path)
         except Exception as e:
