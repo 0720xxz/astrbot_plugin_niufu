@@ -2329,6 +2329,7 @@ class UniversalServerPlugin(Star):
             ("绑定", lambda: self.group_bindings),
             ("告警冷却", lambda: self.alert_cooldown),
         ]
+        images_to_send = []
         for name, fn in tests:
             try:
                 result = await fn() if asyncio.iscoroutinefunction(fn) else fn()
@@ -2339,6 +2340,7 @@ class UniversalServerPlugin(Star):
                     status = f"OK({len(result)}条)"
                 elif isinstance(result, str) and result:
                     status = "OK(图片)"
+                    images_to_send.append((name, result))
                 results.append(f"{name}: {status}")
             except Exception as e:
                 results.append(f"{name}: 失败({e})")
@@ -2348,6 +2350,17 @@ class UniversalServerPlugin(Star):
         results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s")
         for chunk in self._reply_at(event, "\n".join(results)):
             yield chunk
+        for name, img_path in images_to_send:
+            try:
+                if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                    group_id = int(event.message_obj.group_id)
+                    img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                    resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                else:
+                    yield event.image_result(img_path)
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
 
     async def __del__(self):
         if self.session and not self.session.closed:
