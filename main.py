@@ -245,8 +245,17 @@ class UniversalServerPlugin(Star):
             entry = self.server_cache[cache_key]
             age = now_ts - entry.get("ts", 0)
             if age < self.cache_ttl:
-                if age > self.cache_ttl * 0.5:
-                    asyncio.create_task(self._bg_refresh(url, sid, cache_key))
+                if age > self.cache_ttl * 0.4:
+                    try:
+                        session = await self._get_session()
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                                save_server_cache(self.server_cache)
+                                return data
+                    except Exception:
+                        pass
                 return entry.get("data")
         try:
             session = await self._get_session()
@@ -1305,6 +1314,7 @@ class UniversalServerPlugin(Star):
 /撤回时间 <10-300>
 /告警设置 <降幅%> <人数下限>
 /轮询间隔 <30-600>
+/狂暴模式
 /tg设置 <token>
 /tg设置chat <id>
 
