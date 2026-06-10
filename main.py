@@ -35,6 +35,8 @@ from config import (
 )
 
 
+API_BASE = "https://api.scplist.kr/api/servers/"
+
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
 class douUniversalServerPlugin(Star):
     def __init__(self, context: Context):
@@ -49,21 +51,21 @@ class douUniversalServerPlugin(Star):
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         self.session = None
         self.error_logs: list[dict] = load_error_logs()
-        self.error_log_max = 50
+        self.error_log_max = GLOBAL_DATA.get("error_log_max", 50)
         self._errlog_dirty = False
         self.command_logs = load_command_logs()
         self._cmdlog_dirty = False
         self.server_history: dict[str, list] = load_server_history()
-        self.history_max = 240
+        self.history_max = GLOBAL_DATA.get("history_max", 240)
         self.history_interval = GLOBAL_DATA.get("history_interval", 120)
-        self.history_count = 240
+        self.history_count = GLOBAL_DATA.get("history_count", 240)
         self.server_cache: dict[str, dict] = load_server_cache()
         self.cache_ttl = GLOBAL_DATA.get("cache_ttl", 60)
         self.last_history_save = datetime.now()
         self.alert_cooldown: dict[str, datetime] = {}
-        self.alert_cooldown_min = 10
+        self.alert_cooldown_min = GLOBAL_DATA.get("alert_cooldown_min", 10)
         self._last_alert_send: datetime | None = None
-        self._alert_send_interval = 60
+        self._alert_send_interval = GLOBAL_DATA.get("alert_send_interval", 60)
         self.last_player_counts: dict[str, int] = {}
         self.last_report_time: dict[str, datetime] = {}
         self.alert_drop_pct = GLOBAL_DATA.get("alert_drop_pct", 50)
@@ -445,7 +447,7 @@ class douUniversalServerPlugin(Star):
             lines.append("该组别暂无启用的服务器")
             lines.append("==============")
             return lines
-        urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in servers]
+        urls = [f"{API_BASE}{s['id']}" for s in servers]
         results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
         for s, data in zip(servers, results):
             if data:
@@ -511,7 +513,7 @@ class douUniversalServerPlugin(Star):
         all_empty = True
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
-            urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in sg]
+            urls = [f"{API_BASE}{s['id']}" for s in sg]
             results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
             all_empty = False
             for s, data in zip(sg, results):
@@ -545,7 +547,7 @@ class douUniversalServerPlugin(Star):
             lines.append("暂无启用的服务器")
             lines.append("==============")
             return lines
-        results = await asyncio.gather(*(self._fetch(f"https://api.scplist.kr/api/servers/{srv['id']}", sid=srv["id"]) for srv in active_servers))
+        results = await asyncio.gather(*(self._fetch(f"{API_BASE}{srv['id']}", sid=srv["id"]) for srv in active_servers))
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
@@ -623,7 +625,7 @@ class douUniversalServerPlugin(Star):
                 continue
             name = s["display_name"]
             grp = s["group"]
-            url = f"https://api.scplist.kr/api/servers/{s['id']}"
+            url = f"{API_BASE}{s['id']}"
             cache_key = s["id"]
             cached_entry = self.server_cache.get(cache_key)
             cached_data = cached_entry.get("data") if cached_entry else None
@@ -1130,7 +1132,7 @@ class douUniversalServerPlugin(Star):
                 if not g_servers:
                     continue
                 lines.append(f"--- {g} INFO ---")
-                urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in g_servers]
+                urls = [f"{API_BASE}{s['id']}" for s in g_servers]
                 results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
                 for s, data in zip(g_servers, results):
                     if data:
@@ -1149,7 +1151,7 @@ class douUniversalServerPlugin(Star):
             # pre-fetch all data before thread
             info_data = []
             for s in servers:
-                url = f"https://api.scplist.kr/api/servers/{s['id']}"
+                url = f"{API_BASE}{s['id']}"
                 data = await self._fetch(url, sid=s["id"])
                 info_data.append((s, data))
             img_path = await asyncio.to_thread(self._render_info_image, info_data)
