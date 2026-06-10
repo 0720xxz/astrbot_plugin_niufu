@@ -222,7 +222,7 @@ def save_player_logs(data):
 
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
-class UniversalServerPlugin(Star):
+class douUniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
         self.toggle_state = load_toggle_state()
@@ -251,6 +251,7 @@ class UniversalServerPlugin(Star):
         self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
         self._was_zero: dict[str, bool] = {}
         self._alerted: dict[str, str] = {}
+        self._alerted_at_val: dict[str, int] = {}
         self._adaptive_locked = False
         self._raw_dirty = False
         self._plogs_dirty = False
@@ -826,10 +827,14 @@ class UniversalServerPlugin(Star):
                     if name not in self._alerted:
                         self._push_alert(grp, name, anomaly[0], anomaly[1])
                         self._alerted[name] = anomaly[0]
+                        self._alerted_at_val[name] = prev
                     if p == 0 and not was_zero and anomaly[0] == "正在重启":
                         self._was_zero[name] = True
-            if name in self._alerted and p > prev * 0.7:
-                self._alerted.pop(name, None)
+            if name in self._alerted:
+                recover_at = self._alerted_at_val.get(name, prev)
+                if p > recover_at * 0.7:
+                    self._alerted.pop(name, None)
+                    self._alerted_at_val.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = {"p": p, "m": max_p}
@@ -2221,8 +2226,8 @@ class UniversalServerPlugin(Star):
         parts = event.get_message_str().strip().split()
         if len(parts) >= 2 and parts[1] == "关闭":
             self._adaptive_locked = False
-            self.history_interval = GLOBAL_DATA.pop("history_interval", 120)
-            self.cache_ttl = GLOBAL_DATA.pop("cache_ttl", 60)
+            self.history_interval = GLOBAL_DATA.get("history_interval", 120)
+            self.cache_ttl = GLOBAL_DATA.get("cache_ttl", 60)
             save_server_data(GLOBAL_DATA)
             for chunk in self._reply_at(event, "狂暴模式已关闭 恢复自适应"):
                 yield chunk
@@ -2466,10 +2471,12 @@ class UniversalServerPlugin(Star):
                 yield chunk
 
     def start_tg_polling(self):
+        if hasattr(self, '_tg_task') and self._tg_task and not self._tg_task.done():
+            return
         token = GLOBAL_DATA.get("telegram_bot_token", "")
         if not token:
             return
-        asyncio.create_task(self._tg_poll_loop(token))
+        self._tg_task = asyncio.create_task(self._tg_poll_loop(token))
 
     async def _tg_poll_loop(self, token: str):
         await asyncio.sleep(5)
