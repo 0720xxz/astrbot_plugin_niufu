@@ -2266,30 +2266,47 @@ class UniversalServerPlugin(Star):
     async def cmd_raw_data(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        parts = event.get_message_str().strip().split()
+        parts = event.get_message_str().strip().split(maxsplit=2)
         raw = load_raw_responses()
         if not raw:
             for chunk in self._reply_at(event, "暂无存储的报文。"):
                 yield chunk
             return
-        if len(parts) >= 2:
-            key = parts[1]
-            if key in raw:
-                entries = raw[key][-5:]
-                lines = [f"--- {key} 最近5条报文 ---"]
-                for e in entries:
-                    d = e["data"]
-                    lines.append(f"[{e['time']}] online={d.get('online')} players={d.get('players')} info={d.get('info','')[:80]}")
-            else:
-                keys_str = ", ".join(list(raw.keys())[:10])
-                for chunk in self._reply_at(event, f"未找到{key}。可用: {keys_str}"):
+        if len(parts) >= 3:
+            grp, sname = parts[1], parts[2]
+            srv = next((s for s in GLOBAL_DATA["servers"] if s["group"] == grp and (sname in s["default_name"] or sname in s["display_name"])), None)
+            if not srv:
+                for chunk in self._reply_at(event, f"未找到 {grp}/{sname}"):
                     yield chunk
                 return
+            sid = srv["id"]
+            entries = raw.get(sid, [])
+            if not entries:
+                for chunk in self._reply_at(event, f"{srv['display_name']} 暂无报文"):
+                    yield chunk
+                return
+            lines = [f"--- {srv['display_name']} [{sid}] 全部{len(entries)}条 ---"]
+            for e in entries:
+                d = e["data"]
+                lines.append(f"[{e['time']}] online={d.get('online')} players={d.get('players')}")
+        elif len(parts) >= 2:
+            grp = parts[1]
+            servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == grp]
+            if not servers:
+                for chunk in self._reply_at(event, f"组 {grp} 不存在"):
+                    yield chunk
+                return
+            lines = [f"--- {grp} 报文统计 ---"]
+            for s in servers:
+                count = len(raw.get(s["id"], []))
+                lines.append(f"  {s['display_name']} [{s['id']}]: {count}条")
         else:
             lines = [f"存储 {len(raw)} 台服务器报文"]
             for k, v in raw.items():
-                lines.append(f"  {k}: {len(v)}条")
-            lines.append("用法: /报文 <服务器ID>")
+                srv = next((s for s in GLOBAL_DATA["servers"] if s["id"] == k), None)
+                name = srv["display_name"] if srv else k
+                lines.append(f"  {name}: {len(v)}条")
+            lines.append("用法: /报文 <组名> <识别名>")
         for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
 
