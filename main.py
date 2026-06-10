@@ -655,14 +655,15 @@ class UniversalServerPlugin(Star):
 
     async def _refresh_loop(self):
         while True:
-            try:
-                groups = set(s["group"] for s in GLOBAL_DATA["servers"])
-                new_cache = {}
-                for g in groups:
+            groups = set(s["group"] for s in GLOBAL_DATA["servers"])
+            new_cache = {}
+            for g in groups:
+                try:
                     new_cache[g] = await self._build_group_info(g)
-                self.cache = new_cache
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            if new_cache:
+                self.cache.update(new_cache)
             await asyncio.sleep(self.current_interval)
             self.current_interval = min(
                 GLOBAL_DATA["refresh_interval_max"],
@@ -2444,9 +2445,13 @@ class UniversalServerPlugin(Star):
             except Exception:
                 pass
 
-    async def __del__(self):
+    def __del__(self):
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
-                await self.session.close()
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.session.close())
+                else:
+                    loop.run_until_complete(self.session.close())
             except Exception:
                 pass
