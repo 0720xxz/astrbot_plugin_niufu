@@ -236,10 +236,10 @@ class UniversalServerPlugin(Star):
             self.session = aiohttp.ClientSession(headers=headers)
         return self.session
 
-    async def _fetch(self, url, sid=None):
+    async def _fetch(self, url, sid=None, force=False):
         now_ts = datetime.now().timestamp()
         cache_key = sid if sid else url
-        if cache_key in self.server_cache:
+        if not force and cache_key in self.server_cache:
             entry = self.server_cache[cache_key]
             if now_ts - entry.get("ts", 0) < self.cache_ttl:
                 return entry.get("data")
@@ -525,7 +525,7 @@ class UniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in servers]
-        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
+        results = await asyncio.gather(*(self._fetch(url, sid=s["id"], force=True) for url in urls))
         for s, data in zip(servers, results):
             if data:
                 online = data.get("online", True)
@@ -591,7 +591,7 @@ class UniversalServerPlugin(Star):
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
             urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in sg]
-            results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
+            results = await asyncio.gather(*(self._fetch(url, sid=s["id"], force=True) for url in urls))
             all_empty = False
             for s, data in zip(sg, results):
                 if data:
@@ -625,7 +625,7 @@ class UniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in active_servers]
-        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
+        results = await asyncio.gather(*(self._fetch(url, sid=s["id"], force=True) for url in urls))
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
@@ -1097,7 +1097,7 @@ class UniversalServerPlugin(Star):
                     continue
                 lines.append(f"--- {g} INFO ---")
                 urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in g_servers]
-                results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
+                results = await asyncio.gather(*(self._fetch(url, sid=s["id"], force=True) for url, s in zip(urls, g_servers)))
                 for s, data in zip(g_servers, results):
                     if data:
                         info = re.sub(r'<[^>]+>', '', data.get("info", "")).strip()
@@ -1116,7 +1116,7 @@ class UniversalServerPlugin(Star):
             info_data = []
             for s in servers:
                 url = f"https://api.scplist.kr/api/servers/{s['id']}"
-                data = await self._fetch(url, sid=s["id"])
+                data = await self._fetch(url, sid=s["id"], force=True)
                 info_data.append((s, data))
             img_path = await asyncio.to_thread(self._render_info_image, info_data)
             if not img_path:
