@@ -693,7 +693,10 @@ class UniversalServerPlugin(Star):
                     break
                 await asyncio.sleep(3)
             if data is None:
-                self._push_alert(grp, name, "离线", "服务器连续3次请求失败，可能已离线")
+                await asyncio.sleep(2)
+                data2 = await self._fetch(url, sid=s["id"])
+                if data2 is None:
+                    self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
                 continue
             players_str = str(data.get("players", "0"))
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
@@ -702,12 +705,24 @@ class UniversalServerPlugin(Star):
             drop_pct = self.alert_drop_pct / 100.0
             min_p = self.alert_min_players
             was_zero = self._was_zero.get(name, False)
+            anomaly = None
             if prev > min_p and p < prev * (1 - drop_pct):
                 if p == 0 and not was_zero:
-                    self._push_alert(grp, name, "正在重启", f"人数从 {prev} 骤降至 0/{max_p}，可能正在重启")
-                    self._was_zero[name] = True
+                    anomaly = ("正在重启", f"人数从 {prev} 骤降至 0/{max_p}")
                 elif p > 0:
-                    self._push_alert(grp, name, "人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
+                    anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
+            if anomaly:
+                await asyncio.sleep(2)
+                data2 = await self._fetch(url, sid=s["id"])
+                if data2:
+                    p2_str = str(data2.get("players", "0"))
+                    p2 = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
+                    if p2 < prev * (1 - drop_pct):
+                        self._push_alert(grp, name, anomaly[0], anomaly[1])
+                    if p2 == 0 and not was_zero and anomaly[0] == "正在重启":
+                        self._was_zero[name] = True
+                else:
+                    self._push_alert(grp, name, anomaly[0], anomaly[1])
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = p
