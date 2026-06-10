@@ -1938,6 +1938,8 @@ class UniversalServerPlugin(Star):
         else:
             groups_to_show = list(all_gs)
 
+        self._trigger_active_refresh()
+        await asyncio.gather(*(self._build_group_info(g) for g in groups_to_show), return_exceptions=True)
         if not self.server_history:
             for chunk in self._reply_at(event, "暂无历史数据，请先使用 /牛服 或 /查服 生成数据。"):
                 yield chunk
