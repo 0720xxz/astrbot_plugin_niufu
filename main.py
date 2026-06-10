@@ -568,12 +568,21 @@ class UniversalServerPlugin(Star):
                 return re.sub(r'#?\d+$', '', name).strip()
 
             buckets = {}
+            bucket_order = []
             for s in all_servers:
                 pf = _name_prefix(s["display_name"])
                 if pf not in buckets:
                     buckets[pf] = []
+                    bucket_order.append(pf)
                 buckets[pf].append(s)
-            sub_groups = list(buckets.values())
+            merged = []
+            for pf in bucket_order:
+                servers_in_bucket = buckets[pf]
+                if len(servers_in_bucket) <= 1 and merged:
+                    merged[-1].extend(servers_in_bucket)
+                else:
+                    merged.append(servers_in_bucket)
+            sub_groups = merged
         else:
             sub_groups = [[s for s in all_servers if s["group"] == g] for g in groups]
             sub_groups = [sg for sg in sub_groups if sg]
@@ -914,7 +923,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -960,7 +969,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/info", "/告警设置", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/info", "/告警设置", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -2032,6 +2041,54 @@ class UniversalServerPlugin(Star):
         path = os.path.join(tempfile.gettempdir(), "astrbot_niufu_log.png")
         img.save(path, "PNG")
         return path
+
+    @filter.command("告警设置")
+    async def cmd_alert_config(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        pct = self.alert_drop_pct
+        floor = self.alert_min_players
+        if len(parts) < 3:
+            for chunk in self._reply_at(event, f"用法：/告警设置 <降幅%> <人数下限>\n当前：降幅>{pct}% 且 >{floor}人时告警\n告警生效一次后需重新设置"):
+                yield chunk
+            return
+        try:
+            np = int(parts[1])
+            nf = int(parts[2])
+            if np < 10 or np > 90 or nf < 5 or nf > 100:
+                raise ValueError
+            self.alert_drop_pct = np
+            self.alert_min_players = nf
+            GLOBAL_DATA["alert_drop_pct"] = np
+            GLOBAL_DATA["alert_min_players"] = nf
+            save_server_data(GLOBAL_DATA)
+            for chunk in self._reply_at(event, f"告警阈值已设为：降幅>{np}% 且 >{nf}人（一次有效）"):
+                yield chunk
+        except ValueError:
+            for chunk in self._reply_at(event, "降幅 10-90，人数 5-100。"):
+                yield chunk
+
+    @filter.command("轮询间隔")
+    async def cmd_poll_interval(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, f"用法：/轮询间隔 <秒>\n当前：记录间隔{self.history_interval}s 缓存TTL{self.cache_ttl}s\n自适应范围60-300s"):
+                yield chunk
+            return
+        try:
+            t = int(parts[1])
+            if t < 30 or t > 600:
+                raise ValueError
+            self.history_interval = t
+            self.cache_ttl = max(30, t // 2)
+            for chunk in self._reply_at(event, f"轮询间隔已设为 {t}s，缓存TTL {self.cache_ttl}s"):
+                yield chunk
+        except ValueError:
+            for chunk in self._reply_at(event, "请输入 30-600 之间的整数。"):
+                yield chunk
 
     @filter.command("撤回时间")
     async def cmd_retract_time(self, event: AstrMessageEvent):
