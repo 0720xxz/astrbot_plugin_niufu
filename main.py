@@ -1059,6 +1059,8 @@ class UniversalServerPlugin(Star):
             for cmd in self.ADMIN_COMMANDS:
                 if msg_lower.startswith(cmd):
                     return
+            if msg_lower.startswith("/牛服") or msg_lower.startswith("/鸽服"):
+                return
             return
         registered_commands = [
             "/查服", "/ip", "/info", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组",
