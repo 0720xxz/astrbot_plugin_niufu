@@ -1067,8 +1067,10 @@ class UniversalServerPlugin(Star):
         if self._is_blacklisted(event): return
         self._log_command(event, "/info")
         self._trigger_active_refresh()
-        msg = event.get_message_str().strip().split(maxsplit=1)
-        target_group = msg[1].strip() if len(msg) > 1 else None
+        raw = event.get_message_str().strip()
+        as_image = raw.endswith("图")
+        parts = raw.split(maxsplit=1)
+        target_group = parts[1].strip().replace(" 图", "").strip() if len(parts) > 1 else None
         if target_group:
             groups = [g for g in set(s["group"] for s in GLOBAL_DATA["servers"]) if target_group in g] or [target_group]
         else:
@@ -1078,27 +1080,145 @@ class UniversalServerPlugin(Star):
             for chunk in self._reply_at(event, "暂无启用的服务器。"):
                 yield chunk
             return
-        lines = []
-        for g in groups:
-            g_servers = [s for s in servers if s["group"] == g]
-            if not g_servers:
-                continue
-            lines.append(f"--- {g} INFO ---")
-            urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in g_servers]
-            results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
-            for s, data in zip(g_servers, results):
-                if data:
-                    info = re.sub(r'<[^>]+>', '', data.get("info", "")).strip()
-                    info = re.sub(r'\s+', ' ', info)
-                    players = data.get("players", "?/?")
-                    online = data.get("online", False)
-                    status = f"{players}" if online else "离线"
-                    lines.append(f"{s['display_name']} [{status}]")
-                    lines.append(f"  {info}")
+        if not as_image:
+            lines = []
+            for g in groups:
+                g_servers = [s for s in servers if s["group"] == g]
+                if not g_servers:
+                    continue
+                lines.append(f"--- {g} INFO ---")
+                urls = [f"https://api.scplist.kr/api/servers/{s['id']}" for s in g_servers]
+                results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
+                for s, data in zip(g_servers, results):
+                    if data:
+                        info = re.sub(r'<[^>]+>', '', data.get("info", "")).strip()
+                        info = re.sub(r'\s+', ' ', info)
+                        players = data.get("players", "?/?")
+                        online = data.get("online", False)
+                        status = f"{players}" if online else "离线"
+                        lines.append(f"{s['display_name']} [{status}]")
+                        lines.append(f"  {info}")
+                    else:
+                        lines.append(f"{s['display_name']} 离线")
+            for chunk in self._reply_at(event, "\n".join(lines)):
+                yield chunk
+        else:
+            # pre-fetch all data before thread
+            info_data = []
+            for s in servers:
+                url = f"https://api.scplist.kr/api/servers/{s['id']}"
+                data = await self._fetch(url, sid=s["id"])
+                info_data.append((s, data))
+            img_path = await asyncio.to_thread(self._render_info_image, info_data)
+            if not img_path:
+                for chunk in self._reply_at(event, "渲染失败"):
+                    yield chunk
+                return
+            try:
+                if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                    group_id = int(event.message_obj.group_id)
+                    img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                    resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                    msg_id = None
+                    if isinstance(resp, dict):
+                        d = resp.get("data") or resp
+                        msg_id = d.get("message_id") if isinstance(d, dict) else (d if isinstance(d, int) else None)
+                    if msg_id is not None:
+                        msg_id = int(msg_id)
+                        bot = event.bot
+                        async def _retract_info():
+                            await asyncio.sleep(self.retract_seconds)
+                            try:
+                                await bot.api.call_action("delete_msg", message_id=msg_id)
+                            except Exception:
+                                pass
+                        asyncio.create_task(_retract_info())
                 else:
-                    lines.append(f"{s['display_name']} 离线")
-        for chunk in self._reply_at(event, "\n".join(lines)):
-            yield chunk
+                    yield event.image_result(img_path)
+            except Exception:
+                for chunk in self._reply_at(event, "发送图片失败"):
+                    yield chunk
+
+    def _render_info_image(self, info_data):
+        font_name = "C:/Windows/Fonts/msyh.ttc"
+        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
+        try:
+            f_title = ImageFont.truetype(font_bold, 20)
+            f_name = ImageFont.truetype(font_bold, 16)
+            f_info = ImageFont.truetype(font_name, 14)
+        except Exception:
+            f_title = f_name = f_info = ImageFont.load_default()
+
+        rows = []
+        cur_group = None
+        for s, data in info_data:
+            g = s["group"]
+            if g != cur_group:
+                cur_group = g
+                rows.append(("title", f"{g} 服务器信息"))
+            if data:
+                players = data.get("players", "?/?")
+                online = data.get("online", False)
+                status = f"{players}" if online else "离线(offline)"
+                rows.append(("name", f"{s['display_name']}  [{status}]"))
+                segments = self._parse_html_color(data.get("info", ""))
+                rows.append(("colored", segments))
+            else:
+                rows.append(("name", f"{s['display_name']}  离线"))
+            rows.append(("sep", None))
+
+        if not rows:
+            return ""
+        line_h = 26
+        margin = 20
+        img_w = 820
+        img_h = margin + len(rows) * line_h + 20
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        y = 15
+        for rtype, rdata in rows:
+            if rtype == "title":
+                draw.text((margin, y), rdata, fill=(34, 34, 34), font=f_title)
+                y += line_h + 4
+            elif rtype == "sep":
+                draw.line([(margin, y), (img_w - margin, y)], fill=(220, 220, 220), width=1)
+                y += line_h
+            elif rtype == "name":
+                draw.text((margin, y), rdata, fill=(51, 51, 51), font=f_name)
+                y += line_h
+            elif rtype == "colored":
+                x = margin + 10
+                for text, color in rdata:
+                    if color.startswith("#"):
+                        cr = int(color[1:3], 16)
+                        cg = int(color[3:5], 16)
+                        cb = int(color[5:7], 16)
+                    else:
+                        cr, cg, cb = 51, 51, 51
+                    tw = draw.textbbox((0, 0), text, font=f_info)[2]
+                    draw.text((x, y), text, fill=(cr, cg, cb), font=f_info)
+                    x += tw
+                y += line_h
+        path = os.path.join(tempfile.gettempdir(), "astrbot_info.png")
+        img.save(path, "PNG")
+        return path
+
+    def _parse_html_color(self, html: str):
+        result = []
+        pattern = re.compile(r'<span style="color:(#[0-9A-Fa-f]+)">([^<]*)</span>')
+        pos = 0
+        for m in pattern.finditer(html):
+            if m.start() > pos:
+                plain = re.sub(r'<[^>]+>', '', html[pos:m.start()])
+                if plain.strip():
+                    result.append((plain, "#333333"))
+            result.append((m.group(2), m.group(1)))
+            pos = m.end()
+        if pos < len(html):
+            plain = re.sub(r'<[^>]+>', '', html[pos:])
+            if plain.strip():
+                result.append((plain, "#333333"))
+        return result if result else [(re.sub(r'<[^>]+>', '', html).strip(), "#333333")]
 
     @filter.command("help")
     async def help_cmd(self, event: AstrMessageEvent):
