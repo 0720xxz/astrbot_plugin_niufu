@@ -82,6 +82,7 @@ class douUniversalServerPlugin(Star):
         self._bot = None
         self.retract_seconds = GLOBAL_DATA.get("retract_seconds", 30)
         self._session_lock = asyncio.Lock()
+        self._font_cache = {}
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -265,32 +266,12 @@ class douUniversalServerPlugin(Star):
 
         title = groups_to_show[0] if groups_to_show else "全部组别"
 
-        font_name = "C:/Windows/Fonts/msyh.ttc"
-        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
-        try:
-            f_title = ImageFont.truetype(font_bold, 22)
-        except Exception:
-            f_title = ImageFont.load_default()
-        try:
-            f_sub = ImageFont.truetype(font_name, 13)
-        except Exception:
-            f_sub = ImageFont.load_default()
-        try:
-            f_name = ImageFont.truetype(font_bold, 14)
-        except Exception:
-            f_name = ImageFont.load_default()
-        try:
-            f_cur = ImageFont.truetype(font_bold, 15)
-        except Exception:
-            f_cur = ImageFont.load_default()
-        try:
-            f_peak = ImageFont.truetype(font_name, 12)
-        except Exception:
-            f_peak = ImageFont.load_default()
-        try:
-            f_axis = ImageFont.truetype(font_name, 11)
-        except Exception:
-            f_axis = ImageFont.load_default()
+        f_title = self._load_font(22, bold=True)
+        f_sub = self._load_font(13)
+        f_name = self._load_font(14, bold=True)
+        f_cur = self._load_font(15, bold=True)
+        f_peak = self._load_font(12)
+        f_axis = self._load_font(11)
 
         row_h = 155
         title_h = 55
@@ -421,6 +402,37 @@ class douUniversalServerPlugin(Star):
             if ch in chinese_num_map:
                 return chinese_num_map[ch]
         return 9999
+
+    def _load_font(self, size: int, bold: bool = False):
+        """加载字体，自动检测Win/Linux路径，缓存结果"""
+        cache_key = (size, bold)
+        if cache_key in self._font_cache:
+            return self._font_cache[cache_key]
+        font_paths = []
+        if bold:
+            font_paths = [
+                "C:/Windows/Fonts/msyhbd.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+            ]
+        else:
+            font_paths = [
+                "C:/Windows/Fonts/msyh.ttc",
+                "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ]
+        for fp in font_paths:
+            try:
+                font = ImageFont.truetype(fp, size)
+                self._font_cache[cache_key] = font
+                return font
+            except Exception:
+                continue
+        font = ImageFont.load_default()
+        self._font_cache[cache_key] = font
+        return font
 
     async def _build_group_info(self, target_group):
         headers_map = GLOBAL_DATA.get("group_headers", {})
@@ -879,13 +891,8 @@ class douUniversalServerPlugin(Star):
             ci += 1
         if not server_data:
             return ""
-        font_name = "C:/Windows/Fonts/msyh.ttc"
-        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
-        try:
-            f_title = ImageFont.truetype(font_bold, 22)
-            f_row = ImageFont.truetype(font_name, 13)
-        except Exception:
-            f_title = f_row = ImageFont.load_default()
+        f_title = self._load_font(22, bold=True)
+        f_row = self._load_font(13)
         row_h = 28
         img_w = 750
         img_h = 60 + len(server_data) * row_h + 10
@@ -1170,14 +1177,9 @@ class douUniversalServerPlugin(Star):
                     yield chunk
 
     def _render_info_image(self, info_data):
-        font_name = "C:/Windows/Fonts/msyh.ttc"
-        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
-        try:
-            f_title = ImageFont.truetype(font_bold, 20)
-            f_name = ImageFont.truetype(font_bold, 16)
-            f_info = ImageFont.truetype(font_name, 14)
-        except Exception:
-            f_title = f_name = f_info = ImageFont.load_default()
+        f_title = self._load_font(20, bold=True)
+        f_name = self._load_font(16, bold=True)
+        f_info = self._load_font(14)
 
         rows = []
         cur_group = None
@@ -2051,14 +2053,9 @@ class douUniversalServerPlugin(Star):
                 yield chunk
 
     def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count):
-        font_name = "C:/Windows/Fonts/msyh.ttc"
-        font_bold = "C:/Windows/Fonts/msyhbd.ttc"
-        try:
-            f_title = ImageFont.truetype(font_bold, 20)
-            f_section = ImageFont.truetype(font_bold, 15)
-            f_row = ImageFont.truetype(font_name, 12)
-        except Exception:
-            f_title = f_section = f_row = ImageFont.load_default()
+        f_title = self._load_font(20, bold=True)
+        f_section = self._load_font(15, bold=True)
+        f_row = self._load_font(12)
 
         rows = []
         rows.append(f"日志检索 {date_str} (最多{max_count}条)")
@@ -2341,12 +2338,8 @@ class douUniversalServerPlugin(Star):
                 yield chunk
 
     def _render_text_image(self, title, text):
-        font_name = "C:/Windows/Fonts/msyh.ttc"
-        try:
-            f_title = ImageFont.truetype(font_name, 16)
-            f_body = ImageFont.truetype(font_name, 11)
-        except Exception:
-            f_title = f_body = ImageFont.load_default()
+        f_title = self._load_font(16)
+        f_body = self._load_font(11)
         raw_lines = text.split("\n")
         body_lines = []
         for raw in raw_lines:
