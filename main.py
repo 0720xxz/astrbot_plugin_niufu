@@ -242,7 +242,10 @@ class UniversalServerPlugin(Star):
         cache_key = sid if sid else url
         if cache_key in self.server_cache:
             entry = self.server_cache[cache_key]
-            if now_ts - entry.get("ts", 0) < self.cache_ttl:
+            age = now_ts - entry.get("ts", 0)
+            if age < self.cache_ttl:
+                if age > self.cache_ttl * 0.5:
+                    asyncio.create_task(self._bg_refresh(url, sid, cache_key))
                 return entry.get("data")
         try:
             session = await self._get_session()
@@ -265,6 +268,17 @@ class UniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] {msg}")
             self._log_error(msg)
         return None
+
+    async def _bg_refresh(self, url, sid, cache_key):
+        try:
+            session = await self._get_session()
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
+                    save_server_cache(self.server_cache)
+        except Exception:
+            pass
 
     def _log_error(self, msg: str):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
@@ -854,7 +868,7 @@ class UniversalServerPlugin(Star):
         colors = ["#4A90D9", "#E85D47", "#50B86C", "#F5A623", "#8B5CF6", "#EC4899"]
         ci = 0
         for name, entries in self.server_history.items():
-            srv = next((s for s in GLOBAL_DATA["servers"] if s["display_name"] == name and s["group"] == group_name), None)
+            srv = next((s for s in GLOBAL_DATA["servers"] if s["display_name"] == name and (group_name is None or s["group"] == group_name)), None)
             if not srv:
                 continue
             filtered = [e for e in entries if e.get("raw_time", "")]
@@ -884,7 +898,8 @@ class UniversalServerPlugin(Star):
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
         draw = ImageDraw.Draw(img)
         col1, col2, col3, col4, col5 = 20, 200, 290, 370, 450
-        draw.text((20, 12), f"{group_name} {period}统计 {now.strftime('%m-%d %H:%M')}", fill=(34, 34, 34), font=f_title)
+        title_str = group_name if group_name else "全部"
+        draw.text((20, 12), f"{title_str} {period}统计 {now.strftime('%m-%d %H:%M')}", fill=(34, 34, 34), font=f_title)
         draw.text((col1, 42), "服务器", fill=(100, 100, 100), font=f_row)
         draw.text((col2, 42), "当前", fill=(100, 100, 100), font=f_row)
         draw.text((col3, 42), "峰值", fill=(100, 100, 100), font=f_row)
@@ -2052,7 +2067,7 @@ class UniversalServerPlugin(Star):
             rows.append("--- 错误日志 ---")
             for e in err_logs:
                 t = e.get("time", "")[-8:]
-                rows.append(f"{t}  {e.get('msg','')[:100]}")
+                rows.append(f"{t}  {e.get('msg','')}")
 
         if hist_data:
             rows.append("")
@@ -2063,7 +2078,7 @@ class UniversalServerPlugin(Star):
                 rows.append(f"{name}: {recent_vals}")
 
         row_h = 22
-        img_w = 780
+        img_w = 900
         img_h = len(rows) * row_h + 40
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
         draw = ImageDraw.Draw(img)
@@ -2353,7 +2368,7 @@ class UniversalServerPlugin(Star):
             ("/查服", lambda: self._build_group_info(first_group)),
             ("/ip", lambda: self._build_ip_info()),
             ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, gs)),
-            ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, first_group, "一天")),
+            ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, None, "一天")),
             ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), load_command_logs()[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
             ("/niulog", lambda: self.error_logs),
             ("缓存", lambda: self.server_cache),
