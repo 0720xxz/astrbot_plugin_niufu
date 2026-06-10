@@ -314,23 +314,25 @@ class UniversalServerPlugin(Star):
         return None
 
     def _store_raw_response(self, sid, data):
-        raw = load_raw_responses()
+        if not hasattr(self, '_raw_data'):
+            self._raw_data = load_raw_responses()
         key = sid or "unknown"
-        if key not in raw:
-            raw[key] = []
-        raw[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "data": data})
-        if len(raw[key]) > 200:
-            raw[key] = raw[key][-200:]
+        if key not in self._raw_data:
+            self._raw_data[key] = []
+        self._raw_data[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "data": data})
+        if len(self._raw_data[key]) > 200:
+            self._raw_data[key] = self._raw_data[key][-200:]
         self._raw_dirty = True
 
     def _store_player_log(self, sid, display_name, players):
-        plogs = load_player_logs()
+        if not hasattr(self, '_plog_data'):
+            self._plog_data = load_player_logs()
         key = sid or display_name
-        if key not in plogs:
-            plogs[key] = []
-        plogs[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "name": display_name, "players": str(players)})
-        if len(plogs[key]) > 500:
-            plogs[key] = plogs[key][-500:]
+        if key not in self._plog_data:
+            self._plog_data[key] = []
+        self._plog_data[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "name": display_name, "players": str(players)})
+        if len(self._plog_data[key]) > 500:
+            self._plog_data[key] = self._plog_data[key][-500:]
         self._plogs_dirty = True
 
     def _log_error(self, msg: str):
@@ -745,11 +747,11 @@ class UniversalServerPlugin(Star):
                 await self._check_alerts()
             except Exception:
                 pass
-            if self._raw_dirty:
-                save_raw_responses(load_raw_responses())
+            if self._raw_dirty and hasattr(self, '_raw_data'):
+                save_raw_responses(self._raw_data)
                 self._raw_dirty = False
-            if self._plogs_dirty:
-                save_player_logs(load_player_logs())
+            if self._plogs_dirty and hasattr(self, '_plog_data'):
+                save_player_logs(self._plog_data)
                 self._plogs_dirty = False
             if self._cache_dirty:
                 save_server_cache(self.server_cache)
@@ -2317,7 +2319,7 @@ class UniversalServerPlugin(Star):
                 filtered_extra.append(a)
         parts = [parts[0]] + filtered_extra
 
-        raw = load_raw_responses()
+        raw = getattr(self, '_raw_data', None) or load_raw_responses()
         if not raw:
             for chunk in self._reply_at(event, "暂无存储的报文。"):
                 yield chunk
@@ -2392,7 +2394,7 @@ class UniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f"未找到 {grp}/{sname}"):
                 yield chunk
             return
-        raw = load_raw_responses()
+        raw = getattr(self, '_raw_data', None) or load_raw_responses()
         entries = raw.get(srv["id"], [])
         if date_filter:
             entries = [e for e in entries if e.get("time","").startswith(date_filter)]
