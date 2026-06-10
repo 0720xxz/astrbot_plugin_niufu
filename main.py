@@ -251,6 +251,7 @@ class douUniversalServerPlugin(Star):
         self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
         self._was_zero: dict[str, bool] = {}
         self._alerted: dict[str, str] = {}
+        self._stable_count: dict[str, int] = {}
         self._adaptive_locked = False
         self._raw_dirty = False
         self._plogs_dirty = False
@@ -796,8 +797,13 @@ class douUniversalServerPlugin(Star):
                 if data2 is None and "离线" not in self._alerted.get(name, ""):
                     self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
                     self._alerted[name] = "离线"
-                elif data2 is not None:
-                    self._alerted.pop(name, None)
+                    self._stable_count.pop(name, None)
+                elif data2 is not None and name in self._alerted:
+                    cnt = self._stable_count.get(name, 0) + 1
+                    self._stable_count[name] = cnt
+                    if cnt >= 3:
+                        self._alerted.pop(name, None)
+                        self._stable_count.pop(name, None)
                 continue
             players_str = str(data.get("players", "0"))
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
@@ -832,8 +838,15 @@ class douUniversalServerPlugin(Star):
                         self._alerted[name] = anomaly[0]
                     if p == 0 and not was_zero and anomaly[0] == "正在重启":
                         self._was_zero[name] = True
-            if name in self._alerted and p > min_p:
-                self._alerted.pop(name, None)
+            if name in self._alerted:
+                if p > min_p:
+                    cnt = self._stable_count.get(name, 0) + 1
+                    self._stable_count[name] = cnt
+                    if cnt >= 3:
+                        self._alerted.pop(name, None)
+                        self._stable_count.pop(name, None)
+                else:
+                    self._stable_count.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = {"p": p, "m": max_p}
