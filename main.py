@@ -794,7 +794,7 @@ class douUniversalServerPlugin(Star):
                 await asyncio.sleep(2)
                 self.server_cache.pop(cache_key, None)
                 data2 = await self._fetch(url, sid=s["id"])
-                if data2 is None and "离线" not in self._alerted.get(name, ""):
+                if data2 is None and name not in self._alerted:
                     self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
                     self._alerted[name] = "离线"
                     self._stable_count.pop(name, None)
