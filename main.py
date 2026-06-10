@@ -786,14 +786,16 @@ class UniversalServerPlugin(Star):
             players_str = str(data.get("players", "0"))
             p = int(players_str.split("/")[0]) if "/" in players_str else int(players_str) if players_str.isdigit() else 0
             max_p = data.get("max_players") or (int(players_str.split("/")[1]) if "/" in players_str else 0)
-            prev = self.last_player_counts.get(name, p)
+            prev_entry = self.last_player_counts.get(name)
+            prev = prev_entry.get("p", p) if prev_entry else p
+            prev_max = prev_entry.get("m", max_p) if prev_entry else max_p
             drop_pct = self.alert_drop_pct / 100.0
             min_p = self.alert_min_players
             was_zero = self._was_zero.get(name, False)
             anomaly = None
             if name not in self._alerted and prev > min_p and p < prev * (1 - drop_pct):
                 if p == 0 and not was_zero:
-                    anomaly = ("正在重启", f"人数从 {prev} 骤降至 0/{max_p}")
+                    anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}")
                 elif p > 0:
                     anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
             if anomaly:
@@ -818,7 +820,7 @@ class UniversalServerPlugin(Star):
                 self._alerted.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
-            self.last_player_counts[name] = p
+            self.last_player_counts[name] = {"p": p, "m": max_p}
         self._update_adaptive_interval()
 
     def _update_adaptive_interval(self):
@@ -879,12 +881,16 @@ class UniversalServerPlugin(Star):
             m = now.minute
             if h in (0, 12) and m < 2:
                 day_key = now.strftime("%Y-%m-%d") + ("_am" if h == 0 else "_pm")
-                if day_key not in self.last_report_time:
+                if day_key not in self.last_report_time and not getattr(self, '_sending_report', False):
+                    self._sending_report = True
                     self.last_report_time[day_key] = now
                     stale = [k for k, v in self.last_report_time.items() if (now - v).days > 1]
                     for k in stale:
                         self.last_report_time.pop(k, None)
-                    await self._send_daily_report()
+                    try:
+                        await self._send_daily_report()
+                    finally:
+                        self._sending_report = False
             await asyncio.sleep(50)
 
     async def _send_daily_report(self):
