@@ -858,7 +858,7 @@ class UniversalServerPlugin(Star):
                         form = aiohttp.FormData()
                         form.add_field("chat_id", chat_id)
                         form.add_field("caption", text)
-                        form.add_field("photo", open(img_path, "rb"))
+                        form.add_field("photo", open(img_path, "rb"), filename=os.path.basename(img_path))
                         await session.post(f"https://api.telegram.org/bot{token}/sendPhoto", data=form)
                     else:
                         await session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
@@ -972,10 +972,10 @@ class UniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] OneBot发送/撤回失败: {e}")
 
     ADMIN_COMMANDS = [
-        "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组", "/启用端口", "/禁用端口",
+        "/查看所有服", "/添加服", "/删除服", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -993,31 +993,9 @@ class UniversalServerPlugin(Star):
             for cmd in self.ADMIN_COMMANDS:
                 if msg_lower.startswith(cmd):
                     return
-            if msg_lower.startswith("/牛服"):
-                self._log_command(event, "/牛服")
-                self._trigger_active_refresh()
-                niufu_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "牛" in s["group"]]))
-                if not niufu_groups:
-                    niufu_groups = ["牛"]
-                data = await self._build_aggregated_info(niufu_groups)
-                for chunk in self._reply_at(event, "\n".join(data)):
-                    yield chunk
-                event.stop_event()
-                return
-            if msg_lower.startswith("/鸽服"):
-                self._log_command(event, "/鸽服")
-                self._trigger_active_refresh()
-                ge_groups = list(dict.fromkeys([s["group"] for s in GLOBAL_DATA["servers"] if "鸽" in s["group"]]))
-                if not ge_groups:
-                    ge_groups = ["鸽"]
-                data = await self._build_aggregated_info(ge_groups)
-                for chunk in self._reply_at(event, "\n".join(data)):
-                    yield chunk
-                event.stop_event()
-                return
             return
         registered_commands = [
-            "/查服", "/ip", "/info", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组", "/删除组",
+            "/查服", "/ip", "/info", "/help", "/查看所有服", "/添加服", "/删除服", "/删除组",
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
@@ -2241,7 +2219,7 @@ class UniversalServerPlugin(Star):
         if len(parts) < 2:
             token = GLOBAL_DATA.get("telegram_bot_token", "") or "(未设置)"
             chat = GLOBAL_DATA.get("telegram_chat_id", "") or "(未设置)"
-            mask = token[:8] + "***" if token != "(未设置)" else token
+            mask = token[:4] + "****" if token != "(未设置)" else token
             for chunk in self._reply_at(event, f"用法：/tg设置 <token>\n/tg设置chat <chat_id>\n当前Token: {mask}\n当前Chat: {chat}"):
                 yield chunk
             return
