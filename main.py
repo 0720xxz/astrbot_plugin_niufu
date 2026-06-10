@@ -279,17 +279,6 @@ class UniversalServerPlugin(Star):
             self._log_error(msg)
         return None
 
-    async def _bg_refresh(self, url, sid, cache_key):
-        try:
-            session = await self._get_session()
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
-                    save_server_cache(self.server_cache)
-        except Exception:
-            pass
-
     def _log_error(self, msg: str):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
         if len(self.error_logs) > self.error_log_max:
