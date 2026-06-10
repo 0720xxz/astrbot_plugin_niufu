@@ -767,6 +767,7 @@ class UniversalServerPlugin(Star):
             name = s["display_name"]
             grp = s["group"]
             url = f"https://api.scplist.kr/api/servers/{s['id']}"
+            self.server_cache.pop(s["id"], None)
             data = None
             for _ in range(3):
                 data = await self._fetch(url, sid=s["id"])
@@ -2292,13 +2293,20 @@ class UniversalServerPlugin(Star):
     async def cmd_raw_data(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        parts = event.get_message_str().strip().split(maxsplit=3)
+        parts = event.get_message_str().strip().split()
         date_filter = None
-        if len(parts) >= 4:
-            date_filter = parts[3]
-        elif len(parts) == 3 and re.match(r'^\d{2,4}-\d{2}', parts[2]):
-            date_filter = parts[2]
-            parts = [parts[0], parts[1]]  # remove date from parts, treat as /报文 <组>
+        count_limit = 0
+        # parse optional date and count args
+        extra = parts[1:] if len(parts) > 1 else []
+        filtered_extra = []
+        for a in extra:
+            if re.match(r'^\d{2,4}-\d{2}', a):
+                date_filter = a
+            elif a.isdigit():
+                count_limit = int(a)
+            else:
+                filtered_extra.append(a)
+        parts = [parts[0]] + filtered_extra
 
         raw = load_raw_responses()
         if not raw:
@@ -2320,7 +2328,14 @@ class UniversalServerPlugin(Star):
                 for chunk in self._reply_at(event, f"{srv['display_name']} 暂无报文"):
                     yield chunk
                 return
-            label = f"日期{date_filter} " if date_filter else ""
+            if count_limit > 0:
+                entries = entries[-count_limit:]
+            label_parts = []
+            if date_filter:
+                label_parts.append(f"日期{date_filter}")
+            if count_limit > 0:
+                label_parts.append(f"最近{count_limit}条")
+            label = " ".join(label_parts) + " " if label_parts else ""
             lines = [f"--- {srv['display_name']} [{sid}] {label}共{len(entries)}条 ---"]
             for e in entries:
                 d = e["data"]
