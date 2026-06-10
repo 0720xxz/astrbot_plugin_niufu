@@ -1025,7 +1025,7 @@ class UniversalServerPlugin(Star):
         "/查看所有服", "/添加服", "/删除服", "/删除组", "/启用端口", "/禁用端口",
         "/黑名单", "/设置组头部文字", "/改服ID", "/改服名", "/改服组",
         "/调整刷新", "/绑定组", "/解绑组", "/开启模糊匹配", "/关闭模糊匹配",
-        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+        "/开启无斜杠", "/关闭无斜杠", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/长报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
     ]
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -1049,7 +1049,7 @@ class UniversalServerPlugin(Star):
             "/启用端口", "/禁用端口", "/黑名单", "/设置组头部文字", "/改服ID",
             "/改服名", "/改服组", "/调整刷新", "/绑定组", "/解绑组",
             "/开启模糊匹配", "/关闭模糊匹配", "/开启无斜杠", "/关闭无斜杠",
-            "/牛服", "/鸽服", "/info", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
+            "/牛服", "/鸽服", "/info", "/告警设置", "/狂暴模式", "/轮询间隔", "/撤回时间", "/报文", "/长报文", "/tg设置", "/debug", "/niulog", "/牛服日志", "/清除日志", "/历史", "/调整显示", "/日志", "/统计"
         ]
         for cmd in registered_commands:
             if cmd in msg_lower:
@@ -2310,6 +2310,63 @@ class UniversalServerPlugin(Star):
             lines.append("用法: /报文 <组名> <识别名>")
         for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
+
+    @filter.command("长报文")
+    async def cmd_raw_full(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split(maxsplit=2)
+        if len(parts) < 3:
+            for chunk in self._reply_at(event, "用法: /长报文 <组名> <识别名>"):
+                yield chunk
+            return
+        grp, sname = parts[1], parts[2]
+        srv = next((s for s in GLOBAL_DATA["servers"] if s["group"] == grp and (sname in s["default_name"] or sname in s["display_name"])), None)
+        if not srv:
+            for chunk in self._reply_at(event, f"未找到 {grp}/{sname}"):
+                yield chunk
+            return
+        raw = load_raw_responses()
+        entries = raw.get(srv["id"], [])
+        if not entries:
+            for chunk in self._reply_at(event, f"{srv['display_name']} 暂无报文"):
+                yield chunk
+            return
+        lines = [json.dumps(e["data"], ensure_ascii=False, indent=2) for e in entries[-3:]]
+        img_path = await asyncio.to_thread(self._render_text_image, f"{srv['display_name']} 完整报文(最近3条)", "\n\n".join(lines))
+        if img_path:
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+            else:
+                yield event.image_result(img_path)
+        else:
+            for chunk in self._reply_at(event, "渲染失败"):
+                yield chunk
+
+    def _render_text_image(self, title, text):
+        font_name = "C:/Windows/Fonts/msyh.ttc"
+        try:
+            f_title = ImageFont.truetype(font_name, 16)
+            f_body = ImageFont.truetype(font_name, 11)
+        except Exception:
+            f_title = f_body = ImageFont.load_default()
+        body_lines = text.split("\n")
+        line_h = 18
+        margin = 15
+        img_w = 900
+        img_h = 50 + len(body_lines) * line_h + 20
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.text((margin, 12), title, fill=(34, 34, 34), font=f_title)
+        y = 45
+        for line in body_lines:
+            draw.text((margin, y), line, fill=(51, 51, 51), font=f_body)
+            y += line_h
+        path = os.path.join(tempfile.gettempdir(), "astrbot_raw.png")
+        img.save(path, "PNG")
+        return path
 
     @filter.command("tg设置")
     async def cmd_tg_token(self, event: AstrMessageEvent):
