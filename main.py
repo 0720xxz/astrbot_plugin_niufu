@@ -252,6 +252,10 @@ class UniversalServerPlugin(Star):
         self._was_zero: dict[str, bool] = {}
         self._alerted: dict[str, str] = {}
         self._adaptive_locked = False
+        self._raw_dirty = False
+        self._plogs_dirty = False
+        self._cache_dirty = False
+        self._h_dirty = False
         self.alert_task = None
         self.report_task = None
         self._bot = None
@@ -280,7 +284,7 @@ class UniversalServerPlugin(Star):
                             if resp.status == 200:
                                 data = await resp.json()
                                 self.server_cache[cache_key] = {"ts": now_ts, "data": data}
-                                save_server_cache(self.server_cache)
+                                self._cache_dirty = True
                                 self._store_raw_response(sid, data)
                                 return data
                     except Exception:
@@ -296,7 +300,7 @@ class UniversalServerPlugin(Star):
                         stale = sorted(self.server_cache.keys(), key=lambda k: self.server_cache[k].get("ts", 0))[:-50]
                         for k in stale:
                             self.server_cache.pop(k, None)
-                    save_server_cache(self.server_cache)
+                    self._cache_dirty = True
                     self._store_raw_response(sid, data)
                     return data
                 else:
@@ -317,7 +321,7 @@ class UniversalServerPlugin(Star):
         raw[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "data": data})
         if len(raw[key]) > 200:
             raw[key] = raw[key][-200:]
-        save_raw_responses(raw)
+        self._raw_dirty = True
 
     def _store_player_log(self, sid, display_name, players):
         plogs = load_player_logs()
@@ -327,7 +331,7 @@ class UniversalServerPlugin(Star):
         plogs[key].append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "name": display_name, "players": str(players)})
         if len(plogs[key]) > 500:
             plogs[key] = plogs[key][-500:]
-        save_player_logs(plogs)
+        self._plogs_dirty = True
 
     def _log_error(self, msg: str):
         self.error_logs.append({"time": datetime.now().strftime("%m-%d %H:%M:%S"), "msg": msg})
@@ -359,7 +363,7 @@ class UniversalServerPlugin(Star):
         })
         if len(self.server_history[key]) > self.history_max:
             self.server_history[key] = self.server_history[key][-self.history_max:]
-        save_server_history(self.server_history)
+        self._h_dirty = True
         self._store_player_log(key, key, players)
 
     def _log_command(self, event: AstrMessageEvent, cmd: str):
@@ -741,6 +745,18 @@ class UniversalServerPlugin(Star):
                 await self._check_alerts()
             except Exception:
                 pass
+            if self._raw_dirty:
+                save_raw_responses(load_raw_responses())
+                self._raw_dirty = False
+            if self._plogs_dirty:
+                save_player_logs(load_player_logs())
+                self._plogs_dirty = False
+            if self._cache_dirty:
+                save_server_cache(self.server_cache)
+                self._cache_dirty = False
+            if self._h_dirty:
+                save_server_history(self.server_history)
+                self._h_dirty = False
             await asyncio.sleep(60)
 
     async def _check_alerts(self):
