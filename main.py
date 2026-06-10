@@ -1303,7 +1303,6 @@ class UniversalServerPlugin(Star):
 /info [组名] 图
 
 炸了/卡了/宕机/崩了自动查询 无斜杠触发"""
-- 直接发送组名（如"牛"）查询服务器人数"""
         for chunk in self._reply_at(event, help_text):
             yield chunk
 
