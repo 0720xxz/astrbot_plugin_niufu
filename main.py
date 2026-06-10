@@ -2266,7 +2266,14 @@ class UniversalServerPlugin(Star):
     async def cmd_raw_data(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        parts = event.get_message_str().strip().split(maxsplit=2)
+        parts = event.get_message_str().strip().split(maxsplit=3)
+        date_filter = None
+        if len(parts) >= 4:
+            date_filter = parts[3]
+        elif len(parts) == 3 and re.match(r'^\d{2,4}-\d{2}', parts[2]):
+            date_filter = parts[2]
+            parts = [parts[0], parts[1]]  # remove date from parts, treat as /报文 <组>
+
         raw = load_raw_responses()
         if not raw:
             for chunk in self._reply_at(event, "暂无存储的报文。"):
@@ -2281,11 +2288,14 @@ class UniversalServerPlugin(Star):
                 return
             sid = srv["id"]
             entries = raw.get(sid, [])
+            if date_filter:
+                entries = [e for e in entries if e.get("time","").startswith(date_filter)]
             if not entries:
                 for chunk in self._reply_at(event, f"{srv['display_name']} 暂无报文"):
                     yield chunk
                 return
-            lines = [f"--- {srv['display_name']} [{sid}] 全部{len(entries)}条 ---"]
+            label = f"日期{date_filter} " if date_filter else ""
+            lines = [f"--- {srv['display_name']} [{sid}] {label}共{len(entries)}条 ---"]
             for e in entries:
                 d = e["data"]
                 lines.append(f"[{e['time']}] online={d.get('online')} players={d.get('players')}")
@@ -2315,9 +2325,15 @@ class UniversalServerPlugin(Star):
     async def cmd_raw_full(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
             return
-        parts = event.get_message_str().strip().split(maxsplit=2)
+        parts = event.get_message_str().strip().split(maxsplit=3)
+        date_filter = None
+        if len(parts) >= 4:
+            date_filter = parts[3]
+        elif len(parts) == 3 and re.match(r'^\d{2,4}-\d{2}', parts[2]):
+            date_filter = parts[2]
+            parts = [parts[0], parts[1]]
         if len(parts) < 3:
-            for chunk in self._reply_at(event, "用法: /长报文 <组名> <识别名>"):
+            for chunk in self._reply_at(event, "用法: /长报文 <组名> <识别名> [日期]"):
                 yield chunk
             return
         grp, sname = parts[1], parts[2]
@@ -2328,12 +2344,16 @@ class UniversalServerPlugin(Star):
             return
         raw = load_raw_responses()
         entries = raw.get(srv["id"], [])
+        if date_filter:
+            entries = [e for e in entries if e.get("time","").startswith(date_filter)]
         if not entries:
             for chunk in self._reply_at(event, f"{srv['display_name']} 暂无报文"):
                 yield chunk
             return
-        lines = [json.dumps(e["data"], ensure_ascii=False, indent=2) for e in entries[-3:]]
-        img_path = await asyncio.to_thread(self._render_text_image, f"{srv['display_name']} 完整报文(最近3条)", "\n\n".join(lines))
+        dlabel = f" 日期{date_filter}" if date_filter else ""
+        show = entries[-5:] if len(entries) > 5 else entries
+        lines = [json.dumps(e["data"], ensure_ascii=False, indent=2) for e in show]
+        img_path = await asyncio.to_thread(self._render_text_image, f"{srv['display_name']} 完整报文{dlabel} ({len(entries)}条)", "\n\n".join(lines))
         if img_path:
             if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
                 group_id = int(event.message_obj.group_id)
