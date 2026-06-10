@@ -259,6 +259,8 @@ class douUniversalServerPlugin(Star):
         self.last_history_save = datetime.now()
         self.alert_cooldown: dict[str, datetime] = {}
         self.alert_cooldown_min = 10
+        self._last_alert_send: datetime | None = None
+        self._alert_send_interval = 60
         self.last_player_counts: dict[str, int] = {}
         self.last_report_time: dict[str, datetime] = {}
         self.alert_drop_pct = GLOBAL_DATA.get("alert_drop_pct", 50)
@@ -833,15 +835,24 @@ class douUniversalServerPlugin(Star):
             min_p = self.alert_min_players
             was_zero = self._was_zero.get(name, False)
             anomaly = None
+            is_override = False
             if name not in self._alerted and prev > min_p and p < prev * (1 - drop_pct):
                 if p == 0 and not was_zero:
                     anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}")
                 elif p > 0:
                     anomaly = ("人数骤降", f"人数从 {prev} 降至 {p}/{max_p}，跌幅超过{drop_pct*100:.0f}%")
+            elif name in self._alerted and self._alerted[name] == "人数骤降" and p == 0 and not was_zero:
+                anomaly = ("正在重启", f"人数从 {prev}(满{prev_max}) 骤降至 0/{max_p}，覆盖骤降告警")
+                is_override = True
             if anomaly:
                 await asyncio.sleep(2)
                 self.server_cache.pop(s["id"], None)
-                data2 = await self._fetch(url, sid=s["id"])
+                data2 = None
+                for _ in range(3):
+                    data2 = await self._fetch(url, sid=s["id"])
+                    if data2 is not None:
+                        break
+                    await asyncio.sleep(3)
                 confirmed = False
                 if data2:
                     p2_str = str(data2.get("players", "0"))
@@ -851,7 +862,10 @@ class douUniversalServerPlugin(Star):
                 else:
                     confirmed = True
                 if confirmed:
-                    if name not in self._alerted:
+                    if name not in self._alerted or is_override:
+                        if is_override:
+                            self._alerted.pop(name, None)
+                            self._stable_count.pop(name, None)
                         self._push_alert(grp, name, anomaly[0], anomaly[1])
                         self._alerted[name] = anomaly[0]
                     if p == 0 and not was_zero and anomaly[0] == "正在重启":
@@ -897,28 +911,48 @@ class douUniversalServerPlugin(Star):
             self.history_interval, self.cache_ttl = 600, 300
 
     def _push_alert(self, group_name, name, alert_type, msg):
-        key = f"{name}::{alert_type}"
         now = datetime.now()
+        if self._last_alert_send and (now - self._last_alert_send).total_seconds() < self._alert_send_interval:
+            return
+        key = f"{name}::{alert_type}"
         if key in self.alert_cooldown:
             if (now - self.alert_cooldown[key]).total_seconds() < self.alert_cooldown_min * 60:
                 return
+        self._last_alert_send = now
         self.alert_cooldown[key] = now
         text = f"[告警] {name} {alert_type}\n{msg}"
         for gid, gname in self.group_bindings.items():
             if gname == group_name:
-                self._send_to_group_id(gid, text)
+                self._send_alert_to_group(gid, text)
         self._send_telegram(text)
 
-    def _send_to_group_id(self, group_id: str, text: str):
+    def _send_alert_to_group(self, group_id: str, text: str):
+        """发送告警到群并自动撤回"""
         if not self._bot:
             return
-        async def _send():
+        async def _send_and_retract():
             try:
-                await self._bot.api.call_action("send_group_msg", group_id=int(group_id),
+                resp = await self._bot.api.call_action("send_group_msg", group_id=int(group_id),
                     message=[{"type": "text", "data": {"text": text}}])
+                msg_id = None
+                if isinstance(resp, dict):
+                    data = resp.get("data") or resp
+                    if isinstance(data, dict):
+                        msg_id = data.get("message_id")
+                    elif isinstance(data, int):
+                        msg_id = data
+                if msg_id is None and isinstance(resp, dict):
+                    msg_id = resp.get("message_id")
+                if msg_id is not None:
+                    msg_id = int(msg_id)
+                    await asyncio.sleep(self.retract_seconds)
+                    try:
+                        await self._bot.api.call_action("delete_msg", message_id=msg_id)
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        asyncio.create_task(_send())
+        asyncio.create_task(_send_and_retract())
 
     async def _report_loop(self):
         await asyncio.sleep(10)
