@@ -767,16 +767,25 @@ class UniversalServerPlugin(Star):
             name = s["display_name"]
             grp = s["group"]
             url = f"https://api.scplist.kr/api/servers/{s['id']}"
-            self.server_cache.pop(s["id"], None)
+            cache_key = s["id"]
+            cached_entry = self.server_cache.get(cache_key)
+            cached_data = cached_entry.get("data") if cached_entry else None
+            self.server_cache.pop(cache_key, None)
             data = None
             for _ in range(3):
                 data = await self._fetch(url, sid=s["id"])
                 if data is not None:
                     break
                 await asyncio.sleep(3)
+            if data is not None and cached_data is not None:
+                cp = str(cached_data.get("players", ""))
+                dp = str(data.get("players", ""))
+                if cp != dp or cached_data.get("online") != data.get("online"):
+                    self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
+                    self._cache_dirty = True
             if data is None:
                 await asyncio.sleep(2)
-                self.server_cache.pop(s["id"], None)
+                self.server_cache.pop(cache_key, None)
                 data2 = await self._fetch(url, sid=s["id"])
                 if data2 is None and "离线" not in self._alerted.get(name, ""):
                     self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
