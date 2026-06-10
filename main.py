@@ -251,7 +251,6 @@ class douUniversalServerPlugin(Star):
         self.alert_min_players = GLOBAL_DATA.get("alert_min_players", 20)
         self._was_zero: dict[str, bool] = {}
         self._alerted: dict[str, str] = {}
-        self._alerted_at_val: dict[str, int] = {}
         self._adaptive_locked = False
         self._raw_dirty = False
         self._plogs_dirty = False
@@ -827,14 +826,8 @@ class douUniversalServerPlugin(Star):
                     if name not in self._alerted:
                         self._push_alert(grp, name, anomaly[0], anomaly[1])
                         self._alerted[name] = anomaly[0]
-                        self._alerted_at_val[name] = prev
                     if p == 0 and not was_zero and anomaly[0] == "正在重启":
                         self._was_zero[name] = True
-            if name in self._alerted:
-                recover_at = self._alerted_at_val.get(name, prev)
-                if p > recover_at * 0.7:
-                    self._alerted.pop(name, None)
-                    self._alerted_at_val.pop(name, None)
             if p > 0 and was_zero:
                 self._was_zero[name] = False
             self.last_player_counts[name] = {"p": p, "m": max_p}
