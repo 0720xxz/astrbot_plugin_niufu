@@ -3232,6 +3232,87 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f"下载失败: {e}"):
                 yield chunk
 
+    @filter.command("查看背景图")
+    async def cmd_list_bg(self, event: AstrMessageEvent):
+        if self._is_blacklisted(event): return
+        self._log_command(event, "/查看背景图")
+        if not self._bg_images:
+            for chunk in self._reply_at(event, "暂无背景图"):
+                yield chunk
+            return
+        thumb_w, thumb_h = 160, 120
+        cols = 4
+        margin = 12
+        gap = 8
+        rows = (len(self._bg_images) + cols - 1) // cols
+        img_w = margin * 2 + cols * thumb_w + (cols - 1) * gap
+        img_h = margin * 2 + rows * (thumb_h + 30 + gap) - gap
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        f_name = self._load_font(10)
+        for i, bg_path in enumerate(self._bg_images):
+            r, c = i // cols, i % cols
+            x = margin + c * (thumb_w + gap)
+            y = margin + r * (thumb_h + 30 + gap)
+            try:
+                thumb = Image.open(bg_path).convert("RGB")
+                thumb.thumbnail((thumb_w, thumb_h), Image.LANCZOS)
+                tx = x + (thumb_w - thumb.width) // 2
+                ty = y + (thumb_h - thumb.height) // 2
+                img.paste(thumb, (tx, ty))
+            except Exception:
+                pass
+            draw.rectangle([(x, y), (x + thumb_w, y + thumb_h)], outline=(200, 200, 200), width=1)
+            label = bg_path.name
+            if len(label) > 20:
+                label = label[:18] + "..."
+            tw = draw.textbbox((0, 0), label, font=f_name)[2]
+            draw.text((x + (thumb_w - tw) // 2, y + thumb_h + 6), label, fill=(100, 100, 100), font=f_name)
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_bglist_{self._temp_seq}.png")
+        img.save(path, "PNG")
+        try:
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": "file:///" + path.replace(chr(92), "/")}}]
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                msg_id = self._extract_msg_id(resp)
+                if msg_id is not None:
+                    self._schedule_retract(event.bot, int(msg_id), path)
+            else:
+                self._create_tracked_task(self._gc_file(path))
+                yield event.image_result(path)
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
+            pass
+
+    @filter.command("删除背景图")
+    async def cmd_del_bg(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        self._log_command(event, "/删除背景图")
+        parts = event.get_message_str().strip().split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            existing = [p.name for p in (PLUGIN_DIR / "bg").glob("*.jpg") if p.stem.isdigit()]
+            names = ", ".join(sorted(existing, key=lambda x: int(x.rsplit(".",1)[0]))) if existing else "无"
+            for chunk in self._reply_at(event, f"用法：/删除背景图 <编号>\n当前背景图：{names}"):
+                yield chunk
+            return
+        num = int(parts[1])
+        target = PLUGIN_DIR / "bg" / f"{num}.jpg"
+        if not target.exists():
+            for chunk in self._reply_at(event, f"背景图 {num}.jpg 不存在"):
+                yield chunk
+            return
+        try:
+            target.unlink()
+            self._bg_images = self._scan_bg_images()
+            for chunk in self._reply_at(event, f"已删除背景图 {num}.jpg (剩余{len(self._bg_images)}张)"):
+                yield chunk
+        except Exception as e:
+            for chunk in self._reply_at(event, f"删除失败: {e}"):
+                yield chunk
+
     @filter.command("debug")
     async def cmd_debug(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
