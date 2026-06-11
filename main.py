@@ -976,14 +976,7 @@ class douUniversalServerPlugin(Star):
                     f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'}"
                 )
                 logger.warning(
-                    f"[服务器框架] 告警源不一致: {name} {src_status} votes={votes} → {'仍触发' if confirmed else '跳过'}"
-                )
-                if not confirmed:
-                    src_detail = f"p={p_primary} cn={p_cn} mh={p_mh}" if p_primary is not None or p_cn is not None or p_mh is not None else ""
-                    note_text = f"[三源验证] {name} {anomaly[0]} (单一源触发)\n{anomaly[1]}\n{src_status}\n数据: {src_detail}"
-                    for gid, gname in self.group_bindings.items():
-                        if gname == grp:
-                            self._send_alert_to_group(gid, note_text)
+                    f"[服务器框架] 告警源不一致: {name} {src_status} votes={votes} → 跳过"
             if confirmed:
                 if name not in self._alerted or is_override:
                     if is_override:
