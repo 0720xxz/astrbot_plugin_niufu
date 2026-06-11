@@ -38,6 +38,8 @@ from config import (
 API_BASE = "https://api.scplist.kr/api/servers/"
 API_CN = "https://public-lobby-api.scpslgame.top/api?key=scpslgame_cn"
 API_CN_TTL = 60
+API_MH = "https://scp.manghui.net/list/"
+API_MH_TTL = 120
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
 class douUniversalServerPlugin(Star):
@@ -90,6 +92,9 @@ class douUniversalServerPlugin(Star):
         self._data_lock = asyncio.Lock()
         self._cn_cache: dict[int, dict] = {}
         self._cn_cache_ts = 0.0
+        self._mh_cache: dict[int, dict] = {}
+        self._mh_cache_ts = 0.0
+        self._active_source = "primary"
 
     async def _atomic_save(self):
         """在锁内保存 GLOBAL_DATA，防止与后台循环竞态"""
@@ -164,11 +169,18 @@ class douUniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] {msg}")
             self._log_error(msg)
         if sid is not None:
-            fallback = await self._fetch_cn(sid)
-            if fallback is not None:
-                self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": fallback}
-                self._cache_dirty = True
-                return fallback
+            if self._active_source != "primary":
+                preferred = await (self._fetch_cn(sid) if self._active_source == "cn" else self._fetch_manghui(sid))
+                if preferred is not None:
+                    self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": preferred}
+                    self._cache_dirty = True
+                    return preferred
+            for fallback_fn in (self._fetch_cn, self._fetch_manghui):
+                fallback = await fallback_fn(sid)
+                if fallback is not None:
+                    self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": fallback}
+                    self._cache_dirty = True
+                    return fallback
         return None
 
     async def _fetch_cn(self, sid: str):
@@ -216,6 +228,64 @@ class douUniversalServerPlugin(Star):
                 pass
         sid_int = int(sid) if sid else 0
         return self._cn_cache.get(sid_int)
+
+    async def _fetch_manghui(self, sid: str):
+        """从芒辉站点解析服务器数据（HTML解析，CN区域~284服）"""
+        now_ts = datetime.now().timestamp()
+        if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
+            try:
+                session = await self._get_session()
+                async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        html = await resp.text()
+                        new_cache = {}
+                        row_pattern = re.compile(r'<tr[^>]*>\s*(.*?)\s*</tr>', re.DOTALL)
+                        cell_pattern = re.compile(r'<td[^>]*>(.*?)</td>', re.DOTALL)
+                        tag_strip = re.compile(r'<[^>]+>')
+                        ws_collapse = re.compile(r'\s+')
+                        for row_match in row_pattern.finditer(html):
+                            cells = cell_pattern.findall(row_match.group(1))
+                            if len(cells) < 6:
+                                continue
+                            sid_str = tag_strip.sub('', cells[0]).strip()
+                            ip_port = tag_strip.sub('', cells[1]).strip()
+                            desc = tag_strip.sub('', cells[2]).strip()
+                            desc = ws_collapse.sub(' ', desc)
+                            players_str = tag_strip.sub('', cells[3]).strip()
+                            if not sid_str.isdigit():
+                                continue
+                            sid_val = int(sid_str)
+                            ip = ""
+                            port = ""
+                            if ":" in ip_port:
+                                parts = ip_port.rsplit(":", 1)
+                                ip = parts[0]
+                                port = parts[1]
+                            p = 0
+                            m = 0
+                            if "/" in players_str:
+                                pp = players_str.split("/")
+                                p = int(pp[0]) if pp[0].isdigit() else 0
+                                m = int(pp[1]) if pp[1].isdigit() else 0
+                            new_cache[sid_val] = {
+                                "ip": ip,
+                                "port": port,
+                                "players": players_str,
+                                "max_players": m,
+                                "online": True,
+                                "info": desc,
+                                "version": "",
+                                "modded": "Exiled" in (tag_strip.sub('', cells[5]) if len(cells) > 5 else ""),
+                                "distance": 0,
+                            }
+                        self._mh_cache = new_cache
+                        self._mh_cache_ts = now_ts
+                        logger.info(f"[服务器框架] MH缓存已刷新: {len(new_cache)}个CN服务器")
+            except Exception as e:
+                logger.debug(f"non-critical: _fetch_manghui refresh failed: {e}")
+                pass
+        sid_int = int(sid) if sid else 0
+        return self._mh_cache.get(sid_int)
 
     def _store_raw_response(self, sid, data):
         if not hasattr(self, '_raw_data'):
@@ -770,29 +840,43 @@ class douUniversalServerPlugin(Star):
                 if data2 is not None:
                     break
                 await asyncio.sleep(2)
-            data_cn = await self._fetch_cn(s["id"])
-            p_primary = None
-            p_cn = None
-            if data2:
-                p2_str = str(data2.get("players", "0"))
-                p_primary = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
-            if data_cn:
-                cn_players_str = str(data_cn.get("players", "0/0"))
-                p_cn = int(cn_players_str.split("/")[0]) if "/" in cn_players_str else 0
-            primary_ok = p_primary is not None and p_primary < prev * (1 - drop_pct) if p_primary is not None else None
-            cn_ok = p_cn is not None and p_cn < prev * (1 - drop_pct) if p_cn is not None else None
-            confirmed = False
-            if primary_ok is True and cn_ok is True:
-                confirmed = True
-            elif primary_ok is True and cn_ok is None:
-                confirmed = True
-            elif primary_ok is None and cn_ok is True:
-                confirmed = True
-            elif primary_ok is True and cn_ok is False:
-                logger.warning(f"[服务器框架] 告警源分歧: {name} 主源确认异常(p={p_primary}) CN源正常(p={p_cn})，仍触发告警")
-                confirmed = True
-            elif primary_ok is None and cn_ok is None:
-                confirmed = True
+            data_cn, data_mh = await asyncio.gather(
+                self._fetch_cn(s["id"]), self._fetch_manghui(s["id"]), return_exceptions=True
+            )
+            if isinstance(data_cn, BaseException):
+                data_cn = None
+            if isinstance(data_mh, BaseException):
+                data_mh = None
+
+            def _extract_p(d, default=None):
+                if not d:
+                    return None
+                ps = str(d.get("players", "0/0"))
+                return int(ps.split("/")[0]) if "/" in ps else (int(ps) if ps.isdigit() else default)
+
+            p_primary = _extract_p(data2)
+            p_cn = _extract_p(data_cn)
+            p_mh = _extract_p(data_mh)
+
+            def _is_low(p_val):
+                return p_val is not None and p_val < prev * (1 - drop_pct) if p_val is not None else None
+
+            primary_ok = _is_low(p_primary)
+            cn_ok = _is_low(p_cn)
+            mh_ok = _is_low(p_mh)
+
+            votes = sum(1 for v in (primary_ok, cn_ok, mh_ok) if v is True)
+            has_any = any(v is not None for v in (primary_ok, cn_ok, mh_ok))
+            confirmed = votes >= 2 or (votes >= 1 and not has_any) or not has_any
+
+            if votes == 1 and has_any:
+                logger.warning(
+                    f"[服务器框架] 告警源分歧: {name} "
+                    f"主源={'异常' if primary_ok else '正常' if primary_ok is False else '无数据'} "
+                    f"CN={'异常' if cn_ok else '正常' if cn_ok is False else '无数据'} "
+                    f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'} "
+                    f"votes={votes} → {'仍触发' if confirmed else '跳过'}"
+                )
             if confirmed:
                 if name not in self._alerted or is_override:
                     if is_override:
@@ -2641,6 +2725,29 @@ class douUniversalServerPlugin(Star):
         except Exception as e:
             logger.debug(f"non-critical: {e}")
             pass
+
+    @filter.command("切换源")
+    async def cmd_switch_source(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        parts = event.get_message_str().strip().split()
+        sources = {"primary": "api.scplist.kr (主源)", "cn": "scpslgame.top (中文站)", "manghui": "manghui.net (芒辉CN)"}
+        if len(parts) < 2:
+            current = sources.get(self._active_source, self._active_source)
+            opts = "\n".join(f"  {k} → {v}" for k, v in sources.items())
+            for chunk in self._reply_at(event, f"用法：/切换源 <源名称>\n当前源：{current}\n可选：\n{opts}"):
+                yield chunk
+            return
+        choice = parts[1].strip().lower()
+        if choice not in sources:
+            for chunk in self._reply_at(event, f"未知源 {choice}，可选：{', '.join(sources.keys())}"):
+                yield chunk
+            return
+        self._active_source = choice
+        self.current_interval = GLOBAL_DATA["refresh_interval_min"]
+        self._trigger_active_refresh()
+        for chunk in self._reply_at(event, f"已切换到 {sources[choice]}"):
+            yield chunk
 
     @filter.command("debug")
     async def cmd_debug(self, event: AstrMessageEvent):
