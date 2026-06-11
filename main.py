@@ -3215,8 +3215,9 @@ class douUniversalServerPlugin(Star):
             session = await self._get_session()
             bg_dir = PLUGIN_DIR / "bg"
             bg_dir.mkdir(exist_ok=True)
-            idx = len(list(bg_dir.glob("bg_*.jpg"))) + 1
-            save_path = bg_dir / f"bg_{idx:03d}.jpg"
+            existing = [int(p.stem) for p in bg_dir.glob("*.jpg") if p.stem.isdigit()]
+            idx = max(existing) + 1 if existing else 1
+            save_path = bg_dir / f"{idx}.jpg"
             async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
