@@ -654,21 +654,28 @@ class douUniversalServerPlugin(Star):
             lines.append("该组暂无启用的服务器")
             lines.append("==============")
             return lines
-        urls = [f"{API_BASE}{s['id']}" for s in servers]
-        results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url in urls))
+        urls_sids = [(f"{API_BASE}{s['id']}", s["id"]) for s in servers]
+        results = await asyncio.gather(*(self._fetch(url, sid=sid) for url, sid in urls_sids))
         for s, data in zip(servers, results):
-            if data:
-                online = data.get("online", True)
+            if data and data.get("online", True):
                 players = data.get("players", 0)
                 max_players = data.get("max_players")
                 self._save_history(s["display_name"], players, max_players)
-                if not online:
-                    status_str = f"{s['display_name']} 离线"
-                else:
-                    status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
+                status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                 lines.append(status_str)
             else:
-                lines.append(f"{s['display_name']} 离线")
+                x_cn = await self._fetch_cn(s["id"])
+                x_mh = await self._fetch_manghui(s["id"])
+                cn_ok = x_cn and x_cn.get("online", True) and str(x_cn.get("players", "0/0")).split("/")[0] != "0"
+                mh_ok = x_mh and x_mh.get("online", True) and str(x_mh.get("players", "0/0")).split("/")[0] != "0"
+                if cn_ok or mh_ok:
+                    alt = x_cn if cn_ok else x_mh
+                    p = str(alt.get("players", "?")).split("/")[0]
+                    m = str(alt.get("players", "?")).split("/")[1] if "/" in str(alt.get("players", "")) else "?"
+                    self._save_history(s["display_name"], int(p) if p.isdigit() else 0, int(m) if m.isdigit() else None)
+                    lines.append(f"{s['display_name']} {p}/{m} (交叉确认)")
+                else:
+                    lines.append(f"{s['display_name']} 离线")
         lines.append("==============")
         return lines
 
@@ -725,18 +732,25 @@ class douUniversalServerPlugin(Star):
         for sg in sub_groups:
             for s in sg:
                 data = result_map.get(s["id"])
-                if data:
-                    online = data.get("online", True)
+                if data and data.get("online", True):
                     players = data.get("players", 0)
                     max_players = data.get("max_players")
                     self._save_history(s["display_name"], players, max_players)
-                    if not online:
-                        status_str = f"{s['display_name']} 离线"
-                    else:
-                        status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
+                    status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                     lines.append(status_str)
                 else:
-                    lines.append(f"{s['display_name']} 离线")
+                    x_cn = await self._fetch_cn(s["id"])
+                    x_mh = await self._fetch_manghui(s["id"])
+                    cn_ok = x_cn and x_cn.get("online", True) and str(x_cn.get("players", "0/0")).split("/")[0] != "0"
+                    mh_ok = x_mh and x_mh.get("online", True) and str(x_mh.get("players", "0/0")).split("/")[0] != "0"
+                    if cn_ok or mh_ok:
+                        alt = x_cn if cn_ok else x_mh
+                        p = str(alt.get("players", "?")).split("/")[0]
+                        m = str(alt.get("players", "?")).split("/")[1] if "/" in str(alt.get("players", "")) else "?"
+                        self._save_history(s["display_name"], int(p) if p.isdigit() else 0, int(m) if m.isdigit() else None)
+                        lines.append(f"{s['display_name']} {p}/{m} (交叉确认)")
+                    else:
+                        lines.append(f"{s['display_name']} 离线")
             lines.append("==============")
 
         if not flat_servers:
@@ -762,9 +776,31 @@ class douUniversalServerPlugin(Star):
                 if ip and port:
                     lines.insert(-1, f"[{s['group']}] {s['display_name']} > {ip}:{port}")
                 else:
-                    lines.insert(-1, f"[{s['group']}] {s['display_name']} > 端口信息异常")
+                    x_cn = await self._fetch_cn(s["id"])
+                    x_mh = await self._fetch_manghui(s["id"])
+                    alt_ip = ""
+                    alt_port = ""
+                    if x_cn and x_cn.get("ip"):
+                        alt_ip, alt_port = x_cn.get("ip", ""), x_cn.get("port", "")
+                    elif x_mh and x_mh.get("ip"):
+                        alt_ip, alt_port = x_mh.get("ip", ""), x_mh.get("port", "")
+                    if alt_ip and alt_port:
+                        lines.insert(-1, f"[{s['group']}] {s['display_name']} > {alt_ip}:{alt_port} (交叉)")
+                    else:
+                        lines.insert(-1, f"[{s['group']}] {s['display_name']} > 端口信息异常")
             else:
-                lines.insert(-1, f"[{s['group']}] {s['display_name']} > 离线")
+                x_cn = await self._fetch_cn(s["id"])
+                x_mh = await self._fetch_manghui(s["id"])
+                alt_ip = ""
+                alt_port = ""
+                if x_cn and x_cn.get("ip"):
+                    alt_ip, alt_port = x_cn.get("ip", ""), x_cn.get("port", "")
+                elif x_mh and x_mh.get("ip"):
+                    alt_ip, alt_port = x_mh.get("ip", ""), x_mh.get("port", "")
+                if alt_ip and alt_port:
+                    lines.insert(-1, f"[{s['group']}] {s['display_name']} > {alt_ip}:{alt_port} (交叉)")
+                else:
+                    lines.insert(-1, f"[{s['group']}] {s['display_name']} > 离线")
         return lines
 
     async def _refresh_loop(self):
@@ -1696,7 +1732,7 @@ class douUniversalServerPlugin(Star):
 /开启无斜杠 <组名>
 /关闭无斜杠 <组名>
 /切换源 <主源/备份1/备份2>
-/niulog
+/niulog [页码]
 /牛服日志
 /清除日志
 /调整显示 <5-240>
@@ -2223,11 +2259,22 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, " 暂无错误日志，一切正常。"):
                 yield chunk
             return
+        parts = event.get_message_str().strip().split()
+        page = 1
+        per_page = 10
+        if len(parts) > 1 and parts[-1].isdigit():
+            page = max(1, int(parts[-1]))
+        total = len(self.error_logs)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        start = total - page * per_page
+        end = total - (page - 1) * per_page
+        entries = self.error_logs[max(0, start):end]
         lines = [" 服务器查询错误日志", "================"]
-        for entry in self.error_logs[-20:]:
+        for entry in entries:
             lines.append(f"[{entry['time']}] {entry['msg']}")
         lines.append("================")
-        lines.append(f"共 {len(self.error_logs)} 条记录，显示最近 20 条 | /清除日志 清空")
+        lines.append(f"共 {total} 条记录，第{page}/{total_pages}页 | /niulog N 翻页 | /清除日志 清空")
         for chunk in self._reply_at(event, "\n".join(lines)):
             yield chunk
 
@@ -2357,6 +2404,7 @@ class douUniversalServerPlugin(Star):
         self._log_command(event, "/日志")
         parts = event.get_message_str().strip().split()
         count = 60
+        page = 0
         target_date = datetime.now().strftime("%Y-%m-%d")
         for p in parts[1:]:
             if re.match(r'^\d{4}-\d{2}-\d{2}$', p) or re.match(r'^\d{2}-\d{2}$', p):
@@ -2365,7 +2413,11 @@ class douUniversalServerPlugin(Star):
                 else:
                     target_date = p
             elif p.isdigit():
-                count = max(5, min(int(p), 500))
+                v = int(p)
+                if v > 12:
+                    count = max(5, min(v, 500))
+                else:
+                    page = max(1, v)
         date_prefix = target_date
         cmd_logs = self.command_logs
         err_logs = load_error_logs()
@@ -2383,7 +2435,7 @@ class douUniversalServerPlugin(Star):
                 yield chunk
             return
 
-        img_path = await asyncio.to_thread(self._render_log_image, date_prefix, cmd_filtered, err_filtered, hist_data, count)
+        img_path = await asyncio.to_thread(self._render_log_image, date_prefix, cmd_filtered, err_filtered, hist_data, count, page)
         if not img_path:
             for chunk in self._reply_at(event, "渲染日志图片失败。"):
                 yield chunk
@@ -2404,10 +2456,11 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, "发送日志图片失败。"):
                 yield chunk
 
-    def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count):
+    def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count, page=0):
         f_title = self._load_font(20, bold=True)
         f_section = self._load_font(15, bold=True)
         f_row = self._load_font(12)
+        f_page = self._load_font(11)
 
         rows = []
         rows.append(f"日志检索 {date_str} (最多{max_count}条)")
@@ -2441,6 +2494,16 @@ class douUniversalServerPlugin(Star):
                 rows.append(f"{name}: {recent_vals}")
 
         row_h = 22
+        rows_per_page = 40
+        total_rows = len(rows)
+        if page > 0:
+            total_pages = max(1, (total_rows + rows_per_page - 1) // rows_per_page)
+            page = min(page, total_pages)
+            start = (page - 1) * rows_per_page
+            end = start + rows_per_page
+            rows = rows[start:end]
+            rows.append("")
+            rows.append(f"第{page}/{total_pages}页  发送 /日志 日期 N 翻页")
         img_w = 900
         img_h = len(rows) * row_h + 40
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
@@ -2452,6 +2515,8 @@ class douUniversalServerPlugin(Star):
                 draw.text((20, y), line, fill=(34, 34, 34), font=f_title)
             elif line.startswith("---"):
                 draw.text((20, y), line, fill=(74, 144, 226), font=f_section)
+            elif line.startswith("第") and line.endswith("翻页"):
+                draw.text((20, y), line, fill=(130, 130, 130), font=f_page)
             else:
                 draw.text((20, y), line, fill=(68, 68, 68), font=f_row)
 
@@ -3397,7 +3462,9 @@ class douUniversalServerPlugin(Star):
         results.append(f"服务器: {len(GLOBAL_DATA['servers'])}台 | 组别: {len(set(s['group'] for s in GLOBAL_DATA['servers']))}个")
         results.append(f"历史: {len(self.server_history)}台 | 缓存: {len(self.server_cache)}条 | 错误: {len(self.error_logs)}条")
         results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s | 缓存TTL: {self.cache_ttl}s")
-        results.append(f"当前数据源: {self._active_source} | CN缓存: {len(self._cn_cache)}服 | MH缓存: {len(self._mh_cache)}服 | 背景图: {len(self._bg_images)}张")
+        results.append(f"当前数据源: {self._active_source} | CN缓存: {len(self._cn_cache)}服 | MH缓存: {len(self._mh_cache)}服")
+        bg_info = ", ".join([p.name for p in self._bg_images]) if self._bg_images else "无"
+        results.append(f"背景图({len(self._bg_images)}): {bg_info}")
         for chunk in self._reply_at(event, "\n".join(results)):
             yield chunk
         for name, img_path in images_to_send:
