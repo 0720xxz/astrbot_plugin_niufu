@@ -94,7 +94,7 @@ class douUniversalServerPlugin(Star):
         self._cn_cache_ts = 0.0
         self._mh_cache: dict[int, dict] = {}
         self._mh_cache_ts = 0.0
-        self._active_source = "primary"
+        self._active_source = "主源"
 
     async def _atomic_save(self):
         """在锁内保存 GLOBAL_DATA，防止与后台循环竞态"""
@@ -169,8 +169,8 @@ class douUniversalServerPlugin(Star):
             logger.warning(f"[服务器框架] {msg}")
             self._log_error(msg)
         if sid is not None:
-            if self._active_source != "primary":
-                preferred = await (self._fetch_cn(sid) if self._active_source == "cn" else self._fetch_manghui(sid))
+            if self._active_source != "主源":
+                preferred = await (self._fetch_cn(sid) if self._active_source == "备份1" else self._fetch_manghui(sid))
                 if preferred is not None:
                     self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": preferred}
                     self._cache_dirty = True
@@ -2731,14 +2731,14 @@ class douUniversalServerPlugin(Star):
         if not await self._is_admin(event):
             return
         parts = event.get_message_str().strip().split()
-        sources = {"primary": "api.scplist.kr (主源)", "cn": "scpslgame.top (中文站)", "manghui": "manghui.net (芒辉CN)"}
+        sources = {"主源": "api.scplist.kr", "备份1": "scpslgame.top (中文站)", "备份2": "manghui.net (芒辉CN)"}
         if len(parts) < 2:
             current = sources.get(self._active_source, self._active_source)
             opts = "\n".join(f"  {k} → {v}" for k, v in sources.items())
-            for chunk in self._reply_at(event, f"用法：/切换源 <源名称>\n当前源：{current}\n可选：\n{opts}"):
+            for chunk in self._reply_at(event, f"用法：/切换源 <主源/备份1/备份2>\n当前源：{self._active_source} ({current})\n可选：\n{opts}"):
                 yield chunk
             return
-        choice = parts[1].strip().lower()
+        choice = parts[1].strip()
         if choice not in sources:
             for chunk in self._reply_at(event, f"未知源 {choice}，可选：{', '.join(sources.keys())}"):
                 yield chunk
@@ -2746,7 +2746,7 @@ class douUniversalServerPlugin(Star):
         self._active_source = choice
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         self._trigger_active_refresh()
-        for chunk in self._reply_at(event, f"已切换到 {sources[choice]}"):
+        for chunk in self._reply_at(event, f"已切换到 {choice} ({sources[choice]})"):
             yield chunk
 
     @filter.command("debug")
