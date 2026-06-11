@@ -41,7 +41,7 @@ API_CN_TTL = 60
 API_MH = "https://scp.manghui.net/list/"
 API_MH_TTL = 120
 
-@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
+@register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.1")
 class douUniversalServerPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
