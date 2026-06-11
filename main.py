@@ -858,6 +858,7 @@ class douUniversalServerPlugin(Star):
             if cached_data is None or str(cached_data.get("players", "")) != str(data.get("players", "")) or cached_data.get("online") != data.get("online"):
                 self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
                 self._cache_dirty = True
+            self._save_history(name, data.get("players", "0/0"), data.get("max_players"))
         if data is None:
             await asyncio.sleep(2)
             self.server_cache.pop(cache_key, None)
