@@ -287,6 +287,40 @@ class douUniversalServerPlugin(Star):
         sid_int = int(sid) if sid else 0
         return self._mh_cache.get(sid_int)
 
+    async def _search_servers(self, keyword: str, max_results: int = 30):
+        """双源交叉搜索去重，返回匹配的服务器列表"""
+        kw = keyword.lower()
+        await asyncio.gather(
+            self._fetch_cn("0"), self._fetch_manghui("0"), return_exceptions=True
+        )
+        seen = set()
+        results = []
+        for cache in (self._cn_cache, self._mh_cache):
+            for sid, srv in cache.items():
+                if sid in seen:
+                    continue
+                info = (srv.get("info") or "").lower()
+                ip = (srv.get("ip") or "").lower()
+                if kw in info or kw in ip:
+                    seen.add(sid)
+                    name = info.split(" ")[0][:30] if info else str(sid)
+                    for sep in (" ", "】", "]", "|", ">"):
+                        if sep in info and len(info.split(sep)[0]) < 30:
+                            name = info.split(sep)[0].strip()
+                            break
+                    results.append({
+                        "id": sid,
+                        "ip": srv.get("ip", ""),
+                        "port": srv.get("port", ""),
+                        "name": name,
+                        "info": (info[:120] + "...") if len(info) > 120 else info,
+                        "version": srv.get("version", ""),
+                        "players": srv.get("players", "?/?"),
+                        "modded": srv.get("modded", False),
+                    })
+        results.sort(key=lambda r: r["id"])
+        return results[:max_results]
+
     def _store_raw_response(self, sid, data):
         if not hasattr(self, '_raw_data'):
             self._raw_data = load_raw_responses()
@@ -1347,6 +1381,42 @@ class douUniversalServerPlugin(Star):
         except Exception as e:
             for chunk in self._reply_at(event, f" 查询失败: {e}"):
                 yield chunk
+
+    @filter.command("搜索")
+    async def search_cmd(self, event: AstrMessageEvent):
+        """双源交叉搜索服务器（CN API + 芒辉去重）"""
+        if self._is_blacklisted(event): return
+        self._log_command(event, "/搜索")
+        parts = event.get_message_str().strip().split(maxsplit=1)
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, "用法：/搜索 <关键词>\n示例：/搜索 插件  — 搜索包含「插件」的服务器"):
+                yield chunk
+            return
+        keyword = parts[1].strip()
+        results = await self._search_servers(keyword)
+        if not results:
+            for chunk in self._reply_at(event, f" 未找到包含「{keyword}」的服务器"):
+                yield chunk
+            return
+        img_path = await asyncio.to_thread(self._render_search_image, keyword, results)
+        if not img_path:
+            for chunk in self._reply_at(event, "渲染搜索结果失败"):
+                yield chunk
+            return
+        try:
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                msg_id = self._extract_msg_id(resp)
+                if msg_id is not None:
+                    self._schedule_retract(event.bot, int(msg_id), img_path)
+            else:
+                self._create_tracked_task(self._gc_file(img_path))
+                yield event.image_result(img_path)
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
+            pass
 
     @filter.command("info")
     async def info_cmd(self, event: AstrMessageEvent):
@@ -2541,6 +2611,39 @@ class douUniversalServerPlugin(Star):
             y += line_h
         self._temp_seq += 1
         path = os.path.join(tempfile.gettempdir(), f"astrbot_raw_{self._temp_seq}.png")
+        img.save(path, "PNG")
+        return path
+
+    def _render_search_image(self, keyword: str, results: list) -> str:
+        """渲染服务器搜索结果图片"""
+        f_title = self._load_font(18, bold=True)
+        f_row = self._load_font(12)
+        f_small = self._load_font(10)
+        row_h = 56
+        margin = 12
+        col_id, col_ip, col_players, col_ver = 10, 80, 340, 400
+        img_w = 820
+        img_h = 50 + len(results) * row_h + 15
+        img = Image.new("RGB", (img_w, max(img_h, 100)), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        draw.text((margin, 10), f"搜索「{keyword}」— {len(results)}个结果", fill=(34, 34, 34), font=f_title)
+        draw.text((margin, 34), f"ID           IP:端口                    名称/简介                                         人数    版本", fill=(150, 150, 150), font=f_small)
+        for i, r in enumerate(results):
+            y = 50 + i * row_h
+            draw.text((col_id, y), str(r["id"]), fill=(51, 51, 51), font=f_row)
+            ip_str = f"{r['ip']}:{r['port']}"
+            draw.text((col_ip, y), ip_str, fill=(80, 80, 80), font=f_small)
+            name = r["name"][:28]
+            draw.text((col_ip, y + 16), name, fill=(34, 34, 34), font=f_row)
+            info = r["info"][:50]
+            draw.text((col_ip, y + 34), info, fill=(130, 130, 130), font=f_small)
+            draw.text((col_players, y + 8), r["players"], fill=(34, 100, 200), font=f_row)
+            ver = r["version"] or ""
+            if r.get("modded"):
+                ver = ("*" + ver) if ver else "插件"
+            draw.text((col_ver, y + 8), ver[:10], fill=(150, 80, 0) if r.get("modded") else (80, 150, 80), font=f_small)
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_search_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
