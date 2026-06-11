@@ -184,7 +184,7 @@ class douUniversalServerPlugin(Star):
         return None
 
     async def _fetch_cn(self, sid: str):
-        """从中文站API获取服务器数据（降级源），缓存全量列表60s"""
+        """从中文站API获取服务器数据（备用源），缓存全量列表60s"""
         import base64
         now_ts = datetime.now().timestamp()
         if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
@@ -288,7 +288,7 @@ class douUniversalServerPlugin(Star):
         return self._mh_cache.get(sid_int)
 
     async def _search_servers(self, keyword: str, max_results: int = 30):
-        """双源交叉搜索去重，返回匹配的服务器列表"""
+        """双源搜索去重，返回匹配的服务器列表"""
         kw = keyword.lower()
         await asyncio.gather(
             self._fetch_cn("0"), self._fetch_manghui("0"), return_exceptions=True
@@ -622,7 +622,7 @@ class douUniversalServerPlugin(Star):
         servers = [s for s in GLOBAL_DATA["servers"] if s["group"] == target_group and self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
         servers.sort(key=lambda x: self._extract_number(x["display_name"]))
         if not servers:
-            lines.append("该组别暂无启用的服务器")
+            lines.append("该组暂无启用的服务器")
             lines.append("==============")
             return lines
         urls = [f"{API_BASE}{s['id']}" for s in servers]
@@ -660,7 +660,7 @@ class douUniversalServerPlugin(Star):
             all_servers.extend(servers)
 
         if not all_servers:
-            lines.append("该组别暂无启用的服务器")
+            lines.append("该组暂无启用的服务器")
             lines.append("==============")
             return lines
 
@@ -711,7 +711,7 @@ class douUniversalServerPlugin(Star):
             lines.append("==============")
 
         if not flat_servers:
-            lines.append("该组别暂无启用的服务器")
+            lines.append("该组暂无启用的服务器")
             lines.append("==============")
         return lines
 
@@ -905,7 +905,7 @@ class douUniversalServerPlugin(Star):
 
             if votes == 1 and has_any:
                 logger.warning(
-                    f"[服务器框架] 告警源分歧: {name} "
+                    f"[服务器框架] 告警源不一致: {name} "
                     f"主源={'异常' if primary_ok else '正常' if primary_ok is False else '无数据'} "
                     f"CN={'异常' if cn_ok else '正常' if cn_ok is False else '无数据'} "
                     f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'} "
@@ -1332,7 +1332,7 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("查IP")
     async def query_ip_cmd(self, event: AstrMessageEvent):
-        """用CN API按IP反查服务器"""
+        """按IP查服务器"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/查IP")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -1384,7 +1384,7 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("搜索")
     async def search_cmd(self, event: AstrMessageEvent):
-        """双源交叉搜索服务器（CN API + 芒辉去重）"""
+        """关键词搜索服务器（CN API + 芒辉去重）"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/搜索")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -1420,7 +1420,7 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("详情")
     async def detail_cmd(self, event: AstrMessageEvent):
-        """多源聚合服务器详情（支持已配置服名或任意服务器ID）"""
+        """查看服务器详情（支持服名或服务器ID）"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/详情")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -1752,7 +1752,7 @@ class douUniversalServerPlugin(Star):
             return
         group_name, default_name, sid, display_name = msg[1], msg[2], msg[3], msg[4]
         if any(s["default_name"] == default_name and s["group"] == group_name for s in GLOBAL_DATA["servers"]):
-            for chunk in self._reply_at(event, f" 冲突：组别【{group_name}】下识别名【{default_name}】已存在"):
+            for chunk in self._reply_at(event, f" 已存在：组【{group_name}】下识别名【{default_name}】重复"):
                 yield chunk
             return
         GLOBAL_DATA["servers"].append({"id": sid, "group": group_name, "default_name": default_name, "display_name": display_name})
@@ -1842,7 +1842,7 @@ class douUniversalServerPlugin(Star):
         GLOBAL_DATA["group_headers"][group_name] = headers_list
         await self._atomic_save()
         await self._force_refresh_all()
-        for chunk in self._reply_at(event, f" 组【{group_name}】的报头渲染模板更新完毕！"):
+        for chunk in self._reply_at(event, f" 组【{group_name}】的头部显示已更新"):
             yield chunk
 
     @filter.command("改服ID")
@@ -1864,7 +1864,7 @@ class douUniversalServerPlugin(Star):
         if found:
             await self._atomic_save()
             await self._force_refresh_all()
-            for chunk in self._reply_at(event, f" 组【{group_name}】内服务器【{target_name}】的API_ID已变更为：{new_id}"):
+            for chunk in self._reply_at(event, f" 组【{group_name}】服务器【{target_name}】的API_ID已改为：{new_id}"):
                 yield chunk
         else:
             for chunk in self._reply_at(event, f" 找不到该指定服务器"):
@@ -1889,7 +1889,7 @@ class douUniversalServerPlugin(Star):
         if found:
             await self._atomic_save()
             await self._force_refresh_all()
-            for chunk in self._reply_at(event, f" 组【{group_name}】内服务器【{target_name}】的展现别名已变更为：{new_display}"):
+            for chunk in self._reply_at(event, f" 组【{group_name}】服务器【{target_name}】显示名已改为：{new_display}"):
                 yield chunk
         else:
             for chunk in self._reply_at(event, f" 找不到该指定服务器"):
@@ -1920,7 +1920,7 @@ class douUniversalServerPlugin(Star):
             await self._atomic_save()
             save_toggle_state(self.toggle_state)
             await self._force_refresh_all()
-            for chunk in self._reply_at(event, f" 成功跨组迁移：服务器【{target_name}】已移入【{new_group}】"):
+            for chunk in self._reply_at(event, f" 已将【{target_name}】从原组移到【{new_group}】"):
                 yield chunk
         else:
             for chunk in self._reply_at(event, f" 找不到该服务器"):
@@ -1942,7 +1942,7 @@ class douUniversalServerPlugin(Star):
                     self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, " 已恢复全局所有服务器的数据轮询"):
+                for chunk in self._reply_at(event, " 已恢复所有服务器数据查询"):
                     yield chunk
             elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
                 for s in GLOBAL_DATA["servers"]:
@@ -1950,7 +1950,7 @@ class douUniversalServerPlugin(Star):
                         self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = True
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, f" 已恢复组【{target}】下的所有服务器数据轮询"):
+                for chunk in self._reply_at(event, f" 已恢复组【{target}】下的所有服务器数据刷新"):
                     yield chunk
             else:
                 for chunk in self._reply_at(event, f" 未找到匹配的组别名【{target}】"):
@@ -1961,7 +1961,7 @@ class douUniversalServerPlugin(Star):
                 self.toggle_state[_get_toggle_key(g_name, d_name)] = True
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, f" 已恢复组【{g_name}】下的服务器【{d_name}】数据轮询"):
+                for chunk in self._reply_at(event, f" 已恢复组【{g_name}】下的服务器【{d_name}】数据刷新"):
                     yield chunk
             else:
                 for chunk in self._reply_at(event, f" 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"):
@@ -1983,7 +1983,7 @@ class douUniversalServerPlugin(Star):
                     self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, " 全局阻断：所有服务器已停止数据轮询"):
+                for chunk in self._reply_at(event, " 已停止所有服务器数据刷新"):
                     yield chunk
             elif any(s["group"] == target for s in GLOBAL_DATA["servers"]):
                 for s in GLOBAL_DATA["servers"]:
@@ -1991,7 +1991,7 @@ class douUniversalServerPlugin(Star):
                         self.toggle_state[_get_toggle_key(s["group"], s["default_name"])] = False
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, f" 已批量隔离组【{target}】下的所有服务器数据轮询"):
+                for chunk in self._reply_at(event, f" 已停止组【{target}】下的所有服务器数据刷新"):
                     yield chunk
             else:
                 for chunk in self._reply_at(event, f" 未找到匹配的组别名【{target}】"):
@@ -2002,7 +2002,7 @@ class douUniversalServerPlugin(Star):
                 self.toggle_state[_get_toggle_key(g_name, d_name)] = False
                 save_toggle_state(self.toggle_state)
                 await self._force_refresh_all()
-                for chunk in self._reply_at(event, f" 已隔离组【{g_name}】下的服务器【{d_name}】数据轮询"):
+                for chunk in self._reply_at(event, f" 已停止组【{g_name}】下的服务器【{d_name}】数据刷新"):
                     yield chunk
             else:
                 for chunk in self._reply_at(event, f" 在组【{g_name}】下未找到识别名为【{d_name}】的服务器"):
@@ -2698,7 +2698,7 @@ class douUniversalServerPlugin(Star):
         return path
 
     def _render_server_detail(self, srv: dict, primary: dict | None, cn: dict | None, mh: dict | None) -> str:
-        """多源聚合渲染服务器详情卡片"""
+        """渲染服务器详情卡片"""
         import base64
         f_title = self._load_font(22, bold=True)
         f_label = self._load_font(13, bold=True)
@@ -2753,7 +2753,7 @@ class douUniversalServerPlugin(Star):
             info_text = re.sub(r"<[^>]+>", "", str(raw_info)).strip()
             info_text = re.sub(r"\s+", " ", info_text)
         if not info_text:
-            info_text = "(无服务器介绍)"
+            info_text = "(暂无介绍)"
 
         sources = []
         if primary:
@@ -3178,7 +3178,7 @@ class douUniversalServerPlugin(Star):
                 pass
 
     def __del__(self):
-        """尽力关闭session——event loop可能已死，吞掉所有异常"""
+        """关闭session，忽略所有异常"""
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
                 loop = asyncio.get_event_loop()
