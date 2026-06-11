@@ -3173,6 +3173,8 @@ class douUniversalServerPlugin(Star):
             ("/牛服", lambda: self._build_aggregated_info(niu_groups)),
             ("/查服", lambda: self._build_group_info(first_group)),
             ("/ip", lambda: self._build_ip_info()),
+            ("/搜索(插件)", lambda: self._search_servers("插件")),
+            ("/详情(首台)", lambda: self._fetch_cn(str(GLOBAL_DATA["servers"][0]["id"])) if GLOBAL_DATA["servers"] else None),
             ("/历史图表", lambda: asyncio.to_thread(self._build_history_chart_image, gs)),
             ("/统计图", lambda: asyncio.to_thread(self._build_stats_image, None, "一天")),
             ("/日志图", lambda: asyncio.to_thread(self._render_log_image, datetime.now().strftime("%Y-%m-%d"), self.command_logs[-10:], load_error_logs()[-10:], dict(list(self.server_history.items())[:2]), 10)),
@@ -3203,6 +3205,7 @@ class douUniversalServerPlugin(Star):
         results.append(f"服务器: {len(GLOBAL_DATA['servers'])}台 | 组别: {len(set(s['group'] for s in GLOBAL_DATA['servers']))}个")
         results.append(f"历史: {len(self.server_history)}台 | 缓存: {len(self.server_cache)}条 | 错误: {len(self.error_logs)}条")
         results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s | 缓存TTL: {self.cache_ttl}s")
+        results.append(f"当前数据源: {self._active_source} | CN缓存: {len(self._cn_cache)}服 | MH缓存: {len(self._mh_cache)}服 | 背景图: {len(self._bg_images)}张")
         for chunk in self._reply_at(event, "\n".join(results)):
             yield chunk
         for name, img_path in images_to_send:
