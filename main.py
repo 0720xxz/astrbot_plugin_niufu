@@ -1420,25 +1420,32 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("详情")
     async def detail_cmd(self, event: AstrMessageEvent):
-        """多源聚合服务器详情"""
+        """多源聚合服务器详情（支持已配置服名或任意服务器ID）"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/详情")
         parts = event.get_message_str().strip().split(maxsplit=1)
         if len(parts) < 2:
-            for chunk in self._reply_at(event, "用法：/详情 <服务器名>\n示例：/详情 示范服1"):
+            for chunk in self._reply_at(event, "用法：/详情 <服名或ID>\n示例：/详情 示范服1 或 /详情 59471"):
                 yield chunk
             return
-        name = parts[1].strip()
-        srv = next((s for s in GLOBAL_DATA["servers"] if name in s["display_name"] or name in s["default_name"]), None)
-        if not srv:
-            for chunk in self._reply_at(event, f" 未找到服务器「{name}」"):
+        arg = parts[1].strip()
+        srv = next((s for s in GLOBAL_DATA["servers"] if arg in s["display_name"] or arg in s["default_name"]), None)
+        if srv:
+            sid = srv["id"]
+        elif arg.isdigit():
+            sid = arg
+            srv = {"id": sid, "display_name": f"#{sid}", "group": "", "default_name": ""}
+        else:
+            for chunk in self._reply_at(event, f" 未找到服务器「{arg}」（可使用 /搜索 查找或直接输入ID）"):
                 yield chunk
             return
-        sid = srv["id"]
         url = f"{API_BASE}{sid}"
         primary_data = await self._fetch(url, sid=sid)
         cn_data = await self._fetch_cn(sid)
         mh_data = await self._fetch_manghui(sid)
+        if srv["display_name"].startswith("#") and cn_data:
+            name = cn_data.get("info", "").split(" ")[0][:30] if cn_data.get("info") else f"#{sid}"
+            srv["display_name"] = name or f"#{sid}"
         img_path = await asyncio.to_thread(
             self._render_server_detail, srv, primary_data, cn_data, mh_data
         )
