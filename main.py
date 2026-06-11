@@ -113,7 +113,6 @@ class douUniversalServerPlugin(Star):
         return imgs
 
     def _apply_background(self, img: Image.Image) -> Image.Image:
-        """白底+随机桌面图片0.3透明度作为背景"""
         import random as _random
         if not self._bg_images:
             return img
@@ -133,7 +132,6 @@ class douUniversalServerPlugin(Star):
             save_server_data(GLOBAL_DATA)
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
-        """创建可追踪的fire-and-forget任务，teardown时可cancel"""
         task = asyncio.create_task(coro)
         if not hasattr(self, '_pending_tasks'):
             self._pending_tasks = set()
@@ -217,7 +215,6 @@ class douUniversalServerPlugin(Star):
         return None
 
     async def _fetch_cn(self, sid: str):
-        """从中文站API获取服务器数据（备用源），缓存全量列表60s"""
         import base64
         now_ts = datetime.now().timestamp()
         if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
@@ -263,7 +260,6 @@ class douUniversalServerPlugin(Star):
         return self._cn_cache.get(sid_int)
 
     async def _fetch_manghui(self, sid: str):
-        """从芒辉站点解析服务器数据（HTML解析，CN区域~284服）"""
         now_ts = datetime.now().timestamp()
         if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
             try:
@@ -321,7 +317,6 @@ class douUniversalServerPlugin(Star):
         return self._mh_cache.get(sid_int)
 
     async def _search_servers(self, keyword: str, max_results: int = 30):
-        """双源搜索去重，返回匹配的服务器列表"""
         kw = keyword.lower()
         await asyncio.gather(
             self._fetch_cn("0"), self._fetch_manghui("0"), return_exceptions=True
@@ -383,7 +378,6 @@ class douUniversalServerPlugin(Star):
         self._errlog_dirty = True
 
     async def _gc_file(self, path: str, delay: int = 60):
-        """延迟删除临时文件"""
         await asyncio.sleep(delay)
         try:
             os.unlink(path)
@@ -618,7 +612,6 @@ class douUniversalServerPlugin(Star):
         return 9999
 
     def _load_font(self, size: int, bold: bool = False):
-        """加载字体，自动检测Win/Linux路径，缓存结果"""
         cache_key = (size, bold)
         if cache_key in self._font_cache:
             return self._font_cache[cache_key]
@@ -1010,7 +1003,6 @@ class douUniversalServerPlugin(Star):
         self._send_telegram(text)
 
     def _send_alert_to_group(self, group_id: str, text: str):
-        """发送告警到群并自动撤回"""
         if not self._bot:
             return
         async def _send_and_retract():
@@ -1033,7 +1025,6 @@ class douUniversalServerPlugin(Star):
 
     @staticmethod
     def _extract_msg_id(resp) -> int | None:
-        """从OneBot send_msg响应中提取message_id"""
         if isinstance(resp, dict):
             data = resp.get("data") or resp
             if isinstance(data, dict):
@@ -1045,7 +1036,6 @@ class douUniversalServerPlugin(Star):
         return None
 
     def _schedule_retract(self, bot, msg_id: int, img_path: str = None):
-        """通用撤回+可选的临时文件清理"""
         async def _retract():
             await asyncio.sleep(self.retract_seconds)
             try:
@@ -1368,7 +1358,6 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("查IP")
     async def query_ip_cmd(self, event: AstrMessageEvent):
-        """按IP查服务器"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/查IP")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -1420,7 +1409,6 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("搜索")
     async def search_cmd(self, event: AstrMessageEvent):
-        """关键词搜索服务器（CN API + 芒辉去重）"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/搜索")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -1456,7 +1444,6 @@ class douUniversalServerPlugin(Star):
 
     @filter.command("详情")
     async def detail_cmd(self, event: AstrMessageEvent):
-        """查看服务器详情（支持服名或服务器ID）"""
         if self._is_blacklisted(event): return
         self._log_command(event, "/详情")
         parts = event.get_message_str().strip().split(maxsplit=1)
@@ -2685,7 +2672,6 @@ class douUniversalServerPlugin(Star):
         return path
 
     def _render_search_image(self, keyword: str, results: list) -> str:
-        """渲染搜索结果图片，自适应行高，彩色标记"""
         f_title = self._load_font(18, bold=True)
         f_name = self._load_font(13, bold=True)
         f_info = self._load_font(11)
@@ -2797,7 +2783,6 @@ class douUniversalServerPlugin(Star):
         return path
 
     def _render_server_detail(self, srv: dict, primary: dict | None, cn: dict | None, mh: dict | None) -> str:
-        """渲染服务器详情卡片"""
         import base64
         f_title = self._load_font(22, bold=True)
         f_label = self._load_font(13, bold=True)
@@ -3223,7 +3208,6 @@ class douUniversalServerPlugin(Star):
                 pass
 
     async def teardown(self):
-        """清理后台任务、刷脏数据、关闭会话"""
         for attr in ('refresh_task', 'alert_task', 'report_task', '_tg_task'):
             task = getattr(self, attr, None)
             if task and not task.done():
@@ -3281,7 +3265,6 @@ class douUniversalServerPlugin(Star):
                 pass
 
     def __del__(self):
-        """关闭session，忽略所有异常"""
         if hasattr(self, 'session') and self.session and not self.session.closed:
             try:
                 loop = asyncio.get_event_loop()
