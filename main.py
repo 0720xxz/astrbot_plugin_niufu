@@ -105,11 +105,12 @@ class douUniversalServerPlugin(Star):
         self._active_source = "主源"
 
     def _scan_bg_images(self):
-        desktop = Path.home() / "Desktop"
+        bg_dir = PLUGIN_DIR / "bg"
         imgs = []
-        for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
-            for p in desktop.glob(ext):
-                imgs.append(p)
+        if bg_dir.exists():
+            for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
+                for p in bg_dir.glob(ext):
+                    imgs.append(p)
         return imgs
 
     def _apply_background(self, img: Image.Image) -> Image.Image:
