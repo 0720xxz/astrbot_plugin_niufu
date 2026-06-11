@@ -46,8 +46,11 @@ API_MH_TTL = 120
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.1")
 class douUniversalServerPlugin(Star):
+    _pending_tasks: set = set()
+
     def __init__(self, context: Context):
         super().__init__(context)
+        self._pending_tasks = set()
         self.toggle_state = load_toggle_state()
         self.blacklist = load_blacklist()
         self.group_bindings = load_group_bindings()
@@ -108,6 +111,8 @@ class douUniversalServerPlugin(Star):
     def _create_tracked_task(self, coro) -> asyncio.Task:
         """创建可追踪的fire-and-forget任务，teardown时可cancel"""
         task = asyncio.create_task(coro)
+        if not hasattr(self, '_pending_tasks'):
+            self._pending_tasks = set()
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
         return task
