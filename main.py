@@ -970,13 +970,20 @@ class douUniversalServerPlugin(Star):
             confirmed = votes >= 2 or (votes >= 1 and not has_any) or not has_any
 
             if votes == 1 and has_any:
-                logger.warning(
-                    f"[服务器框架] 告警源不一致: {name} "
+                src_status = (
                     f"主源={'异常' if primary_ok else '正常' if primary_ok is False else '无数据'} "
                     f"CN={'异常' if cn_ok else '正常' if cn_ok is False else '无数据'} "
-                    f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'} "
-                    f"votes={votes} → {'仍触发' if confirmed else '跳过'}"
+                    f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'}"
                 )
+                logger.warning(
+                    f"[服务器框架] 告警源不一致: {name} {src_status} votes={votes} → {'仍触发' if confirmed else '跳过'}"
+                )
+                if not confirmed:
+                    src_detail = f"p={p_primary} cn={p_cn} mh={p_mh}" if p_primary is not None or p_cn is not None or p_mh is not None else ""
+                    note_text = f"[三源验证] {name} {anomaly[0]} (单一源触发)\n{anomaly[1]}\n{src_status}\n数据: {src_detail}"
+                    for gid, gname in self.group_bindings.items():
+                        if gname == grp:
+                            self._send_alert_to_group(gid, note_text)
             if confirmed:
                 if name not in self._alerted or is_override:
                     if is_override:
@@ -1029,13 +1036,10 @@ class douUniversalServerPlugin(Star):
 
     def _push_alert(self, group_name, name, alert_type, msg):
         now = datetime.now()
-        if self._last_alert_send and (now - self._last_alert_send).total_seconds() < self._alert_send_interval:
-            return
         key = f"{name}::{alert_type}"
         if key in self.alert_cooldown:
             if (now - self.alert_cooldown[key]).total_seconds() < self.alert_cooldown_min * 60:
                 return
-        self._last_alert_send = now
         self.alert_cooldown[key] = now
         text = f"[告警] {name} {alert_type}\n{msg}"
         for gid, gname in self.group_bindings.items():
@@ -1046,6 +1050,10 @@ class douUniversalServerPlugin(Star):
     def _send_alert_to_group(self, group_id: str, text: str):
         if not self._bot:
             return
+        now = datetime.now()
+        if self._last_alert_send and (now - self._last_alert_send).total_seconds() < self._alert_send_interval:
+            return
+        self._last_alert_send = now
         async def _send_and_retract():
             try:
                 resp = await self._bot.api.call_action("send_group_msg", group_id=int(group_id),
