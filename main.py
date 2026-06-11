@@ -1062,7 +1062,7 @@ class douUniversalServerPlugin(Star):
             now = datetime.now()
             h = now.hour
             m = now.minute
-            if h in (0, 12) and m < 2:
+            if h in (0, 12) and m == 0:
                 day_key = now.strftime("%Y-%m-%d") + ("_am" if h == 0 else "_pm")
                 if day_key not in self.last_report_time and not getattr(self, '_sending_report', False):
                     self._sending_report = True
@@ -1074,7 +1074,7 @@ class douUniversalServerPlugin(Star):
                         await self._send_daily_report()
                     finally:
                         self._sending_report = False
-            await asyncio.sleep(50)
+            await asyncio.sleep(55)
 
     async def _send_daily_report(self):
         groups = list(set(s["group"] for s in GLOBAL_DATA["servers"]))
