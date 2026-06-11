@@ -943,7 +943,9 @@ class douUniversalServerPlugin(Star):
                     if is_override:
                         self._alerted.pop(name, None)
                         self._stable_count.pop(name, None)
-                    self._push_alert(grp, name, anomaly[0], anomaly[1])
+                    src_detail = f"p={p_primary} cn={p_cn} mh={p_mh}" if p_primary is not None or p_cn is not None or p_mh is not None else ""
+                    alert_msg = anomaly[1] + (f"\n三源验证: {src_detail}" if src_detail else "")
+                    self._push_alert(grp, name, anomaly[0], alert_msg)
                     self._alerted[name] = anomaly[0]
                 if p == 0 and not was_zero and anomaly[0] == "正在重启":
                     self._was_zero[name] = True
