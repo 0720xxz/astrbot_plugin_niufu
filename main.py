@@ -318,7 +318,7 @@ class douUniversalServerPlugin(Star):
         sid_int = int(sid) if sid else 0
         return self._mh_cache.get(sid_int)
 
-    async def _search_servers(self, keyword: str, max_results: int = 30):
+    async def _search_servers(self, keyword: str, max_results: int = 100):
         kw = keyword.lower()
         await asyncio.gather(
             self._fetch_cn("0"), self._fetch_manghui("0"), return_exceptions=True
@@ -1418,16 +1418,26 @@ class douUniversalServerPlugin(Star):
         self._log_command(event, "/搜索")
         parts = event.get_message_str().strip().split(maxsplit=1)
         if len(parts) < 2:
-            for chunk in self._reply_at(event, "用法：/搜索 <关键词>\n示例：/搜索 插件  — 搜索包含「插件」的服务器"):
+            for chunk in self._reply_at(event, "用法：/搜索 <关键词> [页码]\n示例：/搜索 插件 或 /搜索 插件 2"):
                 yield chunk
             return
-        keyword = parts[1].strip()
-        results = await self._search_servers(keyword)
-        if not results:
+        args = parts[1].strip().split()
+        page = 1
+        per_page = 10
+        if args[-1].isdigit():
+            page = max(1, int(args[-1]))
+            keyword = " ".join(args[:-1])
+        else:
+            keyword = " ".join(args)
+        all_results = await self._search_servers(keyword, max_results=100)
+        if not all_results:
             for chunk in self._reply_at(event, f" 未找到包含「{keyword}」的服务器"):
                 yield chunk
             return
-        img_path = await asyncio.to_thread(self._render_search_image, keyword, results)
+        total_pages = max(1, (len(all_results) + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        page_results = all_results[(page - 1) * per_page: page * per_page]
+        img_path = await asyncio.to_thread(self._render_search_image, keyword, page_results, page, total_pages)
         if not img_path:
             for chunk in self._reply_at(event, "渲染搜索结果失败"):
                 yield chunk
@@ -2702,7 +2712,7 @@ class douUniversalServerPlugin(Star):
         img.save(path, "PNG")
         return path
 
-    def _render_search_image(self, keyword: str, results: list) -> str:
+    def _render_search_image(self, keyword: str, results: list, page: int = 1, total: int = 1) -> str:
         f_title = self._load_font(18, bold=True)
         f_name = self._load_font(13, bold=True)
         f_info = self._load_font(11)
@@ -2808,6 +2818,13 @@ class douUniversalServerPlugin(Star):
             draw.text((tag_x + 5, y + 12), mod_tag, fill=mod_fg, font=f_tag)
 
             y += rh
+
+        if total > 1:
+            f_page = self._load_font(11)
+            page_text = f"第{page}/{total}页  发送 /搜索 {keyword} N 翻页"
+            draw.rectangle([(0, y + 4), (img_w, y + 30)], fill=(245, 247, 250))
+            tw = draw.textbbox((0, 0), page_text, font=f_page)[2]
+            draw.text(((img_w - tw) // 2, y + 10), page_text, fill=(130, 130, 130), font=f_page)
 
         self._temp_seq += 1
         path = os.path.join(tempfile.gettempdir(), f"astrbot_search_{self._temp_seq}.png")
@@ -3240,17 +3257,27 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, "暂无背景图"):
                 yield chunk
             return
+        parts = event.get_message_str().strip().split()
+        page = 1
+        per_page = 12
+        if len(parts) > 1 and parts[-1].isdigit():
+            page = max(1, int(parts[-1]))
+        total_pages = max(1, (len(self._bg_images) + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        page_images = self._bg_images[(page - 1) * per_page: page * per_page]
         thumb_w, thumb_h = 160, 120
         cols = 4
         margin = 12
         gap = 8
-        rows = (len(self._bg_images) + cols - 1) // cols
+        rows = max(1, (len(page_images) + cols - 1) // cols)
         img_w = margin * 2 + cols * thumb_w + (cols - 1) * gap
         img_h = margin * 2 + rows * (thumb_h + 30 + gap) - gap
+        if total_pages > 1:
+            img_h += 30
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
         draw = ImageDraw.Draw(img)
         f_name = self._load_font(10)
-        for i, bg_path in enumerate(self._bg_images):
+        for i, bg_path in enumerate(page_images):
             r, c = i // cols, i % cols
             x = margin + c * (thumb_w + gap)
             y = margin + r * (thumb_h + 30 + gap)
@@ -3268,6 +3295,13 @@ class douUniversalServerPlugin(Star):
                 label = label[:18] + "..."
             tw = draw.textbbox((0, 0), label, font=f_name)[2]
             draw.text((x + (thumb_w - tw) // 2, y + thumb_h + 6), label, fill=(100, 100, 100), font=f_name)
+        if total_pages > 1:
+            f_page = self._load_font(11)
+            page_text = f"第{page}/{total_pages}页  发送 /查看背景图 N 翻页"
+            py = img_h - 22
+            draw.rectangle([(0, py - 4), (img_w, img_h)], fill=(245, 247, 250))
+            tw = draw.textbbox((0, 0), page_text, font=f_page)[2]
+            draw.text(((img_w - tw) // 2, py), page_text, fill=(130, 130, 130), font=f_page)
         self._temp_seq += 1
         path = os.path.join(tempfile.gettempdir(), f"astrbot_bglist_{self._temp_seq}.png")
         img.save(path, "PNG")
