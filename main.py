@@ -114,8 +114,9 @@ class douUniversalServerPlugin(Star):
             async with self._session_lock:
                 if self.session is None or self.session.closed:
                     headers = {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/3.8",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/4.1",
                         "Accept": "application/json",
+                        "Accept-Encoding": "gzip, deflate",
                     }
                     self.session = aiohttp.ClientSession(headers=headers)
         return self.session
