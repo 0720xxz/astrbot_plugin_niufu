@@ -2,6 +2,7 @@ import json
 import asyncio
 import re
 import os
+import sys
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -11,6 +12,8 @@ from astrbot.api import logger
 import aiohttp
 import astrbot.api.message_components as Comp
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     PLUGIN_DIR, DATA_DIR, DEFAULT_SERVER_DATA,
