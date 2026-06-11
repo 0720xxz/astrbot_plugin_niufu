@@ -2656,33 +2656,112 @@ class douUniversalServerPlugin(Star):
         return path
 
     def _render_search_image(self, keyword: str, results: list) -> str:
-        """渲染服务器搜索结果图片"""
+        """渲染搜索结果图片，自适应行高，彩色标记"""
         f_title = self._load_font(18, bold=True)
-        f_row = self._load_font(12)
+        f_name = self._load_font(13, bold=True)
+        f_info = self._load_font(11)
+        f_tag = self._load_font(10, bold=True)
         f_small = self._load_font(10)
-        row_h = 56
-        margin = 12
-        col_id, col_ip, col_players, col_ver = 10, 80, 340, 400
-        img_w = 820
-        img_h = 50 + len(results) * row_h + 15
-        img = Image.new("RGB", (img_w, max(img_h, 100)), (255, 255, 255))
+
+        margin = 14
+        pad = 10
+        col_id = margin
+        col_name = margin + 62
+        col_players = 620
+        col_ver = 680
+        info_max_w = col_players - col_name - 16
+        img_w = 800
+
+        colors = [
+            (37, 99, 235), (220, 38, 38), (22, 163, 74), (217, 119, 6),
+            (147, 51, 234), (8, 145, 178), (190, 18, 60), (21, 128, 61),
+        ]
+
+        def _wrap(text, font, max_w):
+            lines = []
+            for raw_line in text.split("\n"):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                while raw_line:
+                    for cut in range(len(raw_line), 0, -1):
+                        if draw.textbbox((0, 0), raw_line[:cut], font=font)[2] <= max_w:
+                            lines.append(raw_line[:cut])
+                            raw_line = raw_line[cut:].lstrip()
+                            break
+                    else:
+                        lines.append(raw_line[:1])
+                        raw_line = raw_line[1:]
+            return lines
+
+        row_heights = []
+        header_h = 52
+        min_row_h = 58
+
+        for r in results:
+            name = r["name"][:40] or f"#{r['id']}"
+            info = r["info"][:200] if r["info"] else ""
+            info_lines = _wrap(info, f_info, info_max_w)
+            n_info = min(len(info_lines), 4)
+            extra_h = n_info * 16
+            row_heights.append(max(min_row_h, 40 + extra_h))
+
+        img_h = header_h + sum(row_heights) + 20
+        bg_color = (245, 247, 250)
+        img = Image.new("RGB", (img_w, max(img_h, 120)), bg_color)
         draw = ImageDraw.Draw(img)
-        draw.text((margin, 10), f"搜索「{keyword}」— {len(results)}个结果", fill=(34, 34, 34), font=f_title)
-        draw.text((margin, 34), f"ID           IP:端口                    名称/简介                                         人数    版本", fill=(150, 150, 150), font=f_small)
+
+        draw.rectangle([(0, 0), (img_w, header_h)], fill=(30, 41, 59))
+        draw.text((margin, 10), f"搜索「{keyword}」— {len(results)}个结果", fill=(255, 255, 255), font=f_title)
+        header_labels = f"ID     名称 / 简介                                                                                        人数       版本"
+        draw.text((margin, 34), header_labels, fill=(170, 180, 195), font=f_small)
+
+        y = header_h + 4
         for i, r in enumerate(results):
-            y = 50 + i * row_h
-            draw.text((col_id, y), str(r["id"]), fill=(51, 51, 51), font=f_row)
-            ip_str = f"{r['ip']}:{r['port']}"
-            draw.text((col_ip, y), ip_str, fill=(80, 80, 80), font=f_small)
-            name = r["name"][:28]
-            draw.text((col_ip, y + 16), name, fill=(34, 34, 34), font=f_row)
-            info = r["info"][:50]
-            draw.text((col_ip, y + 34), info, fill=(130, 130, 130), font=f_small)
-            draw.text((col_players, y + 8), r["players"], fill=(34, 100, 200), font=f_row)
-            ver = r["version"] or ""
-            if r.get("modded"):
-                ver = ("*" + ver) if ver else "插件"
-            draw.text((col_ver, y + 8), ver[:10], fill=(150, 80, 0) if r.get("modded") else (80, 150, 80), font=f_small)
+            rh = row_heights[i]
+            color = colors[i % len(colors)]
+            draw.rectangle([(margin - 4, y), (img_w - margin + 4, y + rh - 4)], fill=(255, 255, 255), outline=(225, 228, 232), width=1)
+
+            sid_str = str(r["id"])
+            draw.text((col_id + 2, y + 8), sid_str, fill=(130, 130, 130), font=f_small)
+
+            name = r["name"][:40] or f"#{r['id']}"
+            draw.text((col_name, y + 6), name, fill=color, font=f_name)
+
+            ip_port = f"{r['ip']}:{r['port']}"
+            draw.text((col_name, y + 26), ip_port, fill=(150, 150, 150), font=f_small)
+
+            info = r["info"][:200] if r["info"] else ""
+            info_lines = _wrap(info, f_info, info_max_w)
+            iy = y + 6
+            for li, line in enumerate(info_lines[:4]):
+                draw.text((col_name + 210, iy), line[:55], fill=(100, 100, 100), font=f_info)
+                iy += 16
+
+            players_str = r.get("players", "?/?")
+            p_val = players_str.split("/")[0] if "/" in players_str else "?"
+            m_val = players_str.split("/")[1] if "/" in players_str else "?"
+            is_online = p_val != "0" and p_val != "?"
+            pl_color = (22, 163, 74) if is_online else (150, 150, 150)
+            draw.text((col_players, y + 10), players_str, fill=pl_color, font=f_name)
+
+            ver = r.get("version", "") or ""
+            modded = r.get("modded", False)
+            tag_x = col_ver
+            if ver:
+                tw = draw.textbbox((0, 0), ver, font=f_tag)[2] + 10
+                draw.rectangle([(tag_x, y + 10), (tag_x + tw, y + 26)], fill=(219, 234, 254))
+                draw.text((tag_x + 5, y + 12), ver, fill=(30, 64, 175), font=f_tag)
+                tag_x += tw + 6
+            mod_tag = "插件" if modded else "纯净"
+            mod_bg = (254, 243, 199) if modded else (209, 250, 229)
+            mod_fg = (146, 64, 14) if modded else (6, 95, 70)
+            tw = draw.textbbox((0, 0), mod_tag, font=f_tag)[2] + 10
+            draw.rectangle([(tag_x, y + 10), (tag_x + tw, y + 26)], fill=mod_bg)
+            draw.text((tag_x + 5, y + 12), mod_tag, fill=mod_fg, font=f_tag)
+
+            y += rh
+
         self._temp_seq += 1
         path = os.path.join(tempfile.gettempdir(), f"astrbot_search_{self._temp_seq}.png")
         img.save(path, "PNG")
