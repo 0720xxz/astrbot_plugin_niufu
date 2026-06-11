@@ -36,6 +36,8 @@ from config import (
 
 
 API_BASE = "https://api.scplist.kr/api/servers/"
+API_CN = "https://public-lobby-api.scpslgame.top/api?key=scpslgame_cn"
+API_CN_TTL = 60
 
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.0")
 class douUniversalServerPlugin(Star):
@@ -86,6 +88,8 @@ class douUniversalServerPlugin(Star):
         self._session_lock = asyncio.Lock()
         self._font_cache = {}
         self._data_lock = asyncio.Lock()
+        self._cn_cache: dict[int, dict] = {}
+        self._cn_cache_ts = 0.0
 
     async def _atomic_save(self):
         """在锁内保存 GLOBAL_DATA，防止与后台循环竞态"""
@@ -159,7 +163,59 @@ class douUniversalServerPlugin(Star):
             msg = f"获取服务器数据失败: {e} - {url}"
             logger.warning(f"[服务器框架] {msg}")
             self._log_error(msg)
+        if sid is not None:
+            fallback = await self._fetch_cn(sid)
+            if fallback is not None:
+                self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": fallback}
+                self._cache_dirty = True
+                return fallback
         return None
+
+    async def _fetch_cn(self, sid: str):
+        """从中文站API获取服务器数据（降级源），缓存全量列表60s"""
+        import base64
+        now_ts = datetime.now().timestamp()
+        if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
+            try:
+                session = await self._get_session()
+                async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        raw = await resp.json()
+                        servers = raw.get("data", []) if isinstance(raw, dict) else []
+                        new_cache = {}
+                        for s in servers:
+                            sid_val = s.get("serverId")
+                            if sid_val is None:
+                                continue
+                            players_str = str(s.get("players", "0/0"))
+                            p = int(players_str.split("/")[0]) if "/" in players_str else 0
+                            m = int(players_str.split("/")[1]) if "/" in players_str else 0
+                            info_raw = s.get("info", "")
+                            try:
+                                info_decoded = base64.b64decode(info_raw).decode("utf-8", errors="replace")
+                                info_decoded = re.sub(r"<[^>]+>", "", info_decoded).strip()
+                                info_decoded = re.sub(r"\s+", " ", info_decoded)
+                            except Exception:
+                                info_decoded = ""
+                            new_cache[sid_val] = {
+                                "ip": s.get("ip", ""),
+                                "port": s.get("port", ""),
+                                "players": players_str,
+                                "max_players": m,
+                                "online": True,
+                                "info": info_decoded,
+                                "version": s.get("version", ""),
+                                "modded": s.get("modded", False),
+                                "distance": s.get("distance", 0),
+                            }
+                        self._cn_cache = new_cache
+                        self._cn_cache_ts = now_ts
+                        logger.info(f"[服务器框架] CN API缓存已刷新: {len(new_cache)}个服务器")
+            except Exception as e:
+                logger.debug(f"non-critical: _fetch_cn refresh failed: {e}")
+                pass
+        sid_int = int(sid) if sid else 0
+        return self._cn_cache.get(sid_int)
 
     def _store_raw_response(self, sid, data):
         if not hasattr(self, '_raw_data'):
@@ -709,18 +765,33 @@ class douUniversalServerPlugin(Star):
             await asyncio.sleep(2)
             self.server_cache.pop(s["id"], None)
             data2 = None
-            for _ in range(3):
+            for _ in range(2):
                 data2 = await self._fetch(url, sid=s["id"])
                 if data2 is not None:
                     break
-                await asyncio.sleep(3)
-            confirmed = False
+                await asyncio.sleep(2)
+            data_cn = await self._fetch_cn(s["id"])
+            p_primary = None
+            p_cn = None
             if data2:
                 p2_str = str(data2.get("players", "0"))
-                p2 = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
-                if p2 < prev * (1 - drop_pct):
-                    confirmed = True
-            else:
+                p_primary = int(p2_str.split("/")[0]) if "/" in p2_str else int(p2_str) if p2_str.isdigit() else 0
+            if data_cn:
+                cn_players_str = str(data_cn.get("players", "0/0"))
+                p_cn = int(cn_players_str.split("/")[0]) if "/" in cn_players_str else 0
+            primary_ok = p_primary is not None and p_primary < prev * (1 - drop_pct) if p_primary is not None else None
+            cn_ok = p_cn is not None and p_cn < prev * (1 - drop_pct) if p_cn is not None else None
+            confirmed = False
+            if primary_ok is True and cn_ok is True:
+                confirmed = True
+            elif primary_ok is True and cn_ok is None:
+                confirmed = True
+            elif primary_ok is None and cn_ok is True:
+                confirmed = True
+            elif primary_ok is True and cn_ok is False:
+                logger.warning(f"[服务器框架] 告警源分歧: {name} 主源确认异常(p={p_primary}) CN源正常(p={p_cn})，仍触发告警")
+                confirmed = True
+            elif primary_ok is None and cn_ok is None:
                 confirmed = True
             if confirmed:
                 if name not in self._alerted or is_override:
@@ -1140,6 +1211,58 @@ class douUniversalServerPlugin(Star):
         data = await self._build_ip_info(target_group)
         for chunk in self._reply_at(event, "\n".join(data)):
             yield chunk
+
+    @filter.command("查IP")
+    async def query_ip_cmd(self, event: AstrMessageEvent):
+        """用CN API按IP反查服务器"""
+        if self._is_blacklisted(event): return
+        self._log_command(event, "/查IP")
+        parts = event.get_message_str().strip().split(maxsplit=1)
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, "用法：/查IP <IP地址>\n示例：/查IP 180.188.21.103"):
+                yield chunk
+            return
+        ip = parts[1].strip()
+        try:
+            session = await self._get_session()
+            url = f"{API_CN}&s={ip}"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    raw = await resp.json()
+                    servers = raw.get("data", []) if isinstance(raw, dict) else []
+                    if not servers:
+                        for chunk in self._reply_at(event, f" 未找到IP {ip} 对应的服务器"):
+                            yield chunk
+                        return
+                    import base64
+                    lines = [f" IP {ip} 查询结果", "=============="]
+                    for s in servers:
+                        sid = s.get("serverId", "?")
+                        port = s.get("port", "?")
+                        players = s.get("players", "?/?")
+                        version = s.get("version", "")
+                        modded = "插件" if s.get("modded") else "纯净"
+                        info_raw = s.get("info", "")
+                        desc = ""
+                        if info_raw:
+                            try:
+                                desc = base64.b64decode(info_raw).decode("utf-8", errors="replace")
+                                desc = re.sub(r"<[^>]+>", "", desc).strip()
+                                desc = re.sub(r"\s+", " ", desc)[:80]
+                            except Exception:
+                                pass
+                        lines.append(f"[{sid}] {ip}:{port} {players}人 {modded} v{version}")
+                        if desc:
+                            lines.append(f"  {desc}")
+                    lines.append("==============")
+                    for chunk in self._reply_at(event, "\n".join(lines)):
+                        yield chunk
+                else:
+                    for chunk in self._reply_at(event, f" API查询失败: HTTP {resp.status}"):
+                        yield chunk
+        except Exception as e:
+            for chunk in self._reply_at(event, f" 查询失败: {e}"):
+                yield chunk
 
     @filter.command("info")
     async def info_cmd(self, event: AstrMessageEvent):
