@@ -117,8 +117,15 @@ class douUniversalServerPlugin(Star):
         if not self._bg_images:
             return img
         try:
-            bg = Image.open(random.choice(self._bg_images)).convert("RGB").resize(img.size, Image.LANCZOS)
-            return Image.blend(img, bg, 0.3)
+            bg = Image.open(random.choice(self._bg_images)).convert("RGB")
+            bw, bh = bg.size
+            iw, ih = img.size
+            ratio = min(iw / bw, ih / bh)
+            nw, nh = int(bw * ratio), int(bh * ratio)
+            bg = bg.resize((nw, nh), Image.LANCZOS)
+            canvas = Image.new("RGB", img.size, (255, 255, 255))
+            canvas.paste(bg, ((iw - nw) // 2, (ih - nh) // 2))
+            return Image.blend(img, canvas, 0.3)
         except Exception:
             return img
 
