@@ -3177,6 +3177,60 @@ class douUniversalServerPlugin(Star):
         for chunk in self._reply_at(event, f"已切换到 {choice} ({sources[choice]})"):
             yield chunk
 
+    @filter.command("加入背景图")
+    async def cmd_add_bg(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            return
+        self._log_command(event, "/加入背景图")
+        img_url = None
+        try:
+            messages = event.get_messages()
+            for seg in (messages or []):
+                if hasattr(seg, 'type') and seg.type == "reply":
+                    reply_msg_id = getattr(seg, 'data', {}).get('id', None) if isinstance(getattr(seg, 'data', None), dict) else None
+                    if reply_msg_id and hasattr(event, 'bot') and event.bot:
+                        try:
+                            reply_data = await event.bot.api.call_action("get_msg", message_id=int(reply_msg_id))
+                            reply_segs = reply_data.get("data", {}).get("message", []) if isinstance(reply_data, dict) else []
+                            if isinstance(reply_data, dict) and "message" in reply_data:
+                                reply_segs = reply_data["message"]
+                            for rseg in reply_segs:
+                                if isinstance(rseg, dict) and rseg.get("type") == "image":
+                                    img_url = rseg.get("data", {}).get("url", "")
+                                    if img_url:
+                                        break
+                        except Exception:
+                            pass
+                    break
+                elif hasattr(seg, 'type') and seg.type == "image":
+                    img_url = getattr(seg, 'data', {}).get('url', '') if isinstance(getattr(seg, 'data', None), dict) else getattr(seg, 'url', '')
+                    break
+        except Exception:
+            pass
+        if not img_url:
+            for chunk in self._reply_at(event, "请回复一张图片后使用 /加入背景图"):
+                yield chunk
+            return
+        try:
+            session = await self._get_session()
+            bg_dir = PLUGIN_DIR / "bg"
+            bg_dir.mkdir(exist_ok=True)
+            idx = len(list(bg_dir.glob("bg_*.jpg"))) + 1
+            save_path = bg_dir / f"bg_{idx:03d}.jpg"
+            async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    with open(save_path, "wb") as f:
+                        f.write(data)
+                    img = Image.open(save_path)
+                    img.save(save_path, "JPEG", quality=90)
+            self._bg_images = self._scan_bg_images()
+            for chunk in self._reply_at(event, f"背景图已添加 (共{len(self._bg_images)}张)"):
+                yield chunk
+        except Exception as e:
+            for chunk in self._reply_at(event, f"下载失败: {e}"):
+                yield chunk
+
     @filter.command("debug")
     async def cmd_debug(self, event: AstrMessageEvent):
         if not await self._is_admin(event):
