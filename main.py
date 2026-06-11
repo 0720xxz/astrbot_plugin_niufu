@@ -45,12 +45,19 @@ API_CN_TTL = 60
 API_MH = "https://scp.manghui.net/list/"
 API_MH_TTL = 120
 
+_active_instance_id = None
+_active_lock = asyncio.Lock()
+
 @register("astrbot_plugin_niufu", "内战狂热爱好者", "Dynamic Server Framework", "4.1")
 class douUniversalServerPlugin(Star):
     _pending_tasks: set = set()
 
     def __init__(self, context: Context):
         super().__init__(context)
+        global _active_instance_id
+        _active_instance_id = id(self)
+        self._instance_id = id(self)
+        self._stopped = False
         self._pending_tasks = set()
         self.toggle_state = load_toggle_state()
         self.blacklist = load_blacklist()
@@ -570,9 +577,15 @@ class douUniversalServerPlugin(Star):
         return path
 
     def _trigger_active_refresh(self):
+        if getattr(self, '_stopped', False) or not self._is_active():
+            return
         self.current_interval = GLOBAL_DATA["refresh_interval_min"]
         if self.refresh_task is None or self.refresh_task.done():
             self.refresh_task = asyncio.create_task(self._refresh_loop())
+
+    def _is_active(self) -> bool:
+        global _active_instance_id
+        return _active_instance_id == id(self)
 
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
         try:
@@ -804,7 +817,7 @@ class douUniversalServerPlugin(Star):
         return lines
 
     async def _refresh_loop(self):
-        while True:
+        while not self._stopped:
             groups = set(s["group"] for s in GLOBAL_DATA["servers"])
             new_cache = {}
             for g in groups:
@@ -831,6 +844,8 @@ class douUniversalServerPlugin(Star):
             pass
 
     def start_background_tasks(self):
+        if getattr(self, '_stopped', False) or not self._is_active():
+            return
         if self.alert_task is None or self.alert_task.done():
             self.alert_task = asyncio.create_task(self._alert_loop())
         if self.report_task is None or self.report_task.done():
@@ -839,7 +854,7 @@ class douUniversalServerPlugin(Star):
 
     async def _alert_loop(self):
         await asyncio.sleep(60)
-        while True:
+        while not self._stopped:
             try:
                 await self._check_alerts()
             except Exception as e:
@@ -1096,7 +1111,7 @@ class douUniversalServerPlugin(Star):
 
     async def _report_loop(self):
         await asyncio.sleep(10)
-        while True:
+        while not self._stopped:
             now = datetime.now()
             h = now.hour
             m = now.minute
@@ -1281,6 +1296,8 @@ class douUniversalServerPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def on_message(self, event: AstrMessageEvent):
+        if getattr(self, '_stopped', False) or not self._is_active():
+            return
         if not self._bot and hasattr(event, 'bot'):
             self._bot = event.bot
             self.start_background_tasks()
@@ -3086,6 +3103,8 @@ class douUniversalServerPlugin(Star):
                 yield chunk
 
     def start_tg_polling(self):
+        if getattr(self, '_stopped', False) or not self._is_active():
+            return
         if hasattr(self, '_tg_task') and self._tg_task and not self._tg_task.done():
             return
         token = GLOBAL_DATA.get("telegram_bot_token", "")
@@ -3097,7 +3116,7 @@ class douUniversalServerPlugin(Star):
         await asyncio.sleep(5)
         offset = 0
         async with aiohttp.ClientSession() as sess:
-            while True:
+            while not self._stopped:
                 try:
                     url = f"https://api.telegram.org/bot{token}/getUpdates?timeout=30&offset={offset}"
                     async with sess.get(url, timeout=aiohttp.ClientTimeout(total=35)) as resp:
@@ -3111,6 +3130,8 @@ class douUniversalServerPlugin(Star):
                     await asyncio.sleep(5)
 
     async def _tg_handle_update(self, upd: dict, token: str):
+        if getattr(self, '_stopped', False):
+            return
         msg = upd.get("message") or upd.get("channel_post")
         if not msg:
             return
@@ -3483,6 +3504,10 @@ class douUniversalServerPlugin(Star):
                 pass
 
     async def teardown(self):
+        global _active_instance_id
+        self._stopped = True
+        if _active_instance_id == id(self):
+            _active_instance_id = None
         for attr in ('refresh_task', 'alert_task', 'report_task', '_tg_task'):
             task = getattr(self, attr, None)
             if task and not task.done():
