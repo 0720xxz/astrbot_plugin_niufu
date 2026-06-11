@@ -1418,6 +1418,49 @@ class douUniversalServerPlugin(Star):
             logger.debug(f"non-critical: {e}")
             pass
 
+    @filter.command("详情")
+    async def detail_cmd(self, event: AstrMessageEvent):
+        """多源聚合服务器详情"""
+        if self._is_blacklisted(event): return
+        self._log_command(event, "/详情")
+        parts = event.get_message_str().strip().split(maxsplit=1)
+        if len(parts) < 2:
+            for chunk in self._reply_at(event, "用法：/详情 <服务器名>\n示例：/详情 示范服1"):
+                yield chunk
+            return
+        name = parts[1].strip()
+        srv = next((s for s in GLOBAL_DATA["servers"] if name in s["display_name"] or name in s["default_name"]), None)
+        if not srv:
+            for chunk in self._reply_at(event, f" 未找到服务器「{name}」"):
+                yield chunk
+            return
+        sid = srv["id"]
+        url = f"{API_BASE}{sid}"
+        primary_data = await self._fetch(url, sid=sid)
+        cn_data = await self._fetch_cn(sid)
+        mh_data = await self._fetch_manghui(sid)
+        img_path = await asyncio.to_thread(
+            self._render_server_detail, srv, primary_data, cn_data, mh_data
+        )
+        if not img_path:
+            for chunk in self._reply_at(event, "渲染详情失败"):
+                yield chunk
+            return
+        try:
+            if event.get_platform_name() == "aiocqhttp" and not event.is_private_chat():
+                group_id = int(event.message_obj.group_id)
+                img_msg = [{"type": "image", "data": {"file": "file:///" + img_path.replace(chr(92), "/")}}]
+                resp = await event.bot.api.call_action("send_group_msg", group_id=group_id, message=img_msg)
+                msg_id = self._extract_msg_id(resp)
+                if msg_id is not None:
+                    self._schedule_retract(event.bot, int(msg_id), img_path)
+            else:
+                self._create_tracked_task(self._gc_file(img_path))
+                yield event.image_result(img_path)
+        except Exception as e:
+            logger.debug(f"non-critical: {e}")
+            pass
+
     @filter.command("info")
     async def info_cmd(self, event: AstrMessageEvent):
         if self._is_blacklisted(event): return
@@ -2644,6 +2687,164 @@ class douUniversalServerPlugin(Star):
             draw.text((col_ver, y + 8), ver[:10], fill=(150, 80, 0) if r.get("modded") else (80, 150, 80), font=f_small)
         self._temp_seq += 1
         path = os.path.join(tempfile.gettempdir(), f"astrbot_search_{self._temp_seq}.png")
+        img.save(path, "PNG")
+        return path
+
+    def _render_server_detail(self, srv: dict, primary: dict | None, cn: dict | None, mh: dict | None) -> str:
+        """多源聚合渲染服务器详情卡片"""
+        import base64
+        f_title = self._load_font(22, bold=True)
+        f_label = self._load_font(13, bold=True)
+        f_body = self._load_font(13)
+        f_small = self._load_font(11)
+        f_tag = self._load_font(10, bold=True)
+        margin = 20
+        line_h = 22
+        img_w = 780
+
+        def _tag_box(text, color):
+            tw = draw.textbbox((0, 0), text, font=f_tag)[2] + 12
+            return tw
+
+        def _pick(*keys):
+            for src in (primary, cn, mh):
+                if src:
+                    for k in keys:
+                        v = src.get(k)
+                        if v is not None and v != "" and v != 0:
+                            return v
+            return ""
+
+        name = srv["display_name"]
+        sid = srv["id"]
+
+        ip = _pick("ip")
+        port = _pick("port")
+        ip_str = f"{ip}:{port}" if ip and port else (f"{ip}:?" if ip else "未知IP")
+
+        players = _pick("players")
+        max_p = _pick("max_players")
+        if not max_p and players and "/" in str(players):
+            max_p = str(players).split("/")[1]
+        online = _pick("online")
+        if online is None and players:
+            online = True
+
+        version = _pick("version") or ""
+        modded = _pick("modded")
+        if modded is None:
+            modded = False
+        distance = _pick("distance") or 0
+
+        info_text = ""
+        if cn and cn.get("info"):
+            info_text = cn["info"]
+        elif mh and mh.get("info"):
+            info_text = mh["info"]
+        elif primary and primary.get("info"):
+            raw_info = primary.get("info", "")
+            info_text = re.sub(r"<[^>]+>", "", str(raw_info)).strip()
+            info_text = re.sub(r"\s+", " ", info_text)
+        if not info_text:
+            info_text = "(无服务器介绍)"
+
+        sources = []
+        if primary:
+            sources.append("scplist.kr")
+        if cn:
+            sources.append("scpslgame.top")
+        if mh:
+            sources.append("manghui.net")
+
+        info_lines = []
+        for raw_line in info_text.split("\n"):
+            clean = raw_line.strip()
+            while len(clean) > 100:
+                info_lines.append(clean[:100])
+                clean = clean[100:]
+            if clean:
+                info_lines.append(clean)
+        info_lines = info_lines[:15]
+
+        num_info = len(info_lines)
+        info_h = num_info * (line_h - 2)
+        card_h = 190 + info_h
+        img_h = max(card_h, 200)
+
+        bg_color = (248, 250, 252)
+        card_color = (255, 255, 255)
+        accent = (37, 99, 235)
+        green = (22, 163, 74)
+        red = (220, 38, 38)
+        gray = (107, 114, 128)
+        dark = (31, 41, 55)
+
+        img = Image.new("RGB", (img_w, img_h), bg_color)
+        draw = ImageDraw.Draw(img)
+
+        draw.rectangle([(margin, 8), (img_w - margin, img_h - 8)], radius=12, fill=card_color)
+        draw.rectangle([(margin, 8), (img_w - margin, 52)], radius=12, fill=accent)
+        draw.rectangle([(margin, 40), (img_w - margin, 52)], fill=accent)
+
+        draw.text((margin + 12, 14), name, fill=(255, 255, 255), font=f_title)
+        sid_str = f"ID: {sid}"
+        sid_w = draw.textbbox((0, 0), sid_str, font=f_small)[2]
+        draw.text((img_w - margin - 16 - sid_w, 18), sid_str, fill=(200, 220, 255), font=f_small)
+
+        y = 60
+        label_x = margin + 12
+        val_x = label_x + 70
+
+        draw.text((label_x, y), "地址", fill=gray, font=f_label)
+        draw.text((val_x, y), ip_str, fill=dark, font=f_body)
+        y += line_h
+
+        players_str = str(players) if players else "?/?"
+        draw.text((label_x, y), "人数", fill=gray, font=f_label)
+        if online:
+            draw.text((val_x, y), f"{players_str}  在线", fill=green, font=f_body)
+        else:
+            draw.text((val_x, y), f"{players_str}  离线", fill=red, font=f_body)
+        y += line_h
+
+        tags_y = y
+        tag_x = val_x
+        if version:
+            tw = _tag_box(version, (240, 240, 255))
+            draw.rectangle([(tag_x, tags_y + 2), (tag_x + tw, tags_y + 20)], radius=6, fill=(219, 234, 254))
+            draw.text((tag_x + 6, tags_y + 3), version, fill=(30, 64, 175), font=f_tag)
+            tag_x += tw + 10
+        mod_tag = "插件服" if modded else "纯净服"
+        mod_bg = (254, 243, 199) if modded else (209, 250, 229)
+        mod_fg = (146, 64, 14) if modded else (6, 95, 70)
+        tw = _tag_box(mod_tag, mod_bg)
+        draw.rectangle([(tag_x, tags_y + 2), (tag_x + tw, tags_y + 20)], radius=6, fill=mod_bg)
+        draw.text((tag_x + 6, tags_y + 3), mod_tag, fill=mod_fg, font=f_tag)
+        tag_x += tw + 10
+        if distance > 0:
+            dist_tag = f"距离 {distance}km"
+            tw = _tag_box(dist_tag, (243, 244, 246))
+            draw.rectangle([(tag_x, tags_y + 2), (tag_x + tw, tags_y + 20)], radius=6, fill=(243, 244, 246))
+            draw.text((tag_x + 6, tags_y + 3), dist_tag, fill=gray, font=f_tag)
+        y = tags_y + 28
+
+        draw.line([(label_x, y), (img_w - margin - 12, y)], fill=(229, 231, 235), width=1)
+        y += 6
+        draw.text((label_x, y), "介绍", fill=gray, font=f_label)
+        y += line_h
+
+        for line in info_lines:
+            draw.text((val_x, y), line, fill=dark, font=f_body)
+            y += line_h - 2
+
+        y += 4
+        draw.line([(label_x, y), (img_w - margin - 12, y)], fill=(229, 231, 235), width=1)
+        y += 6
+        src_str = "数据源: " + " / ".join(sources)
+        draw.text((label_x, y), src_str, fill=gray, font=f_small)
+
+        self._temp_seq += 1
+        path = os.path.join(tempfile.gettempdir(), f"astrbot_detail_{self._temp_seq}.png")
         img.save(path, "PNG")
         return path
 
