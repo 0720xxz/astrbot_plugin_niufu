@@ -3,6 +3,7 @@ import asyncio
 import re
 import os
 import sys
+import random
 import tempfile
 from pathlib import Path
 from datetime import datetime
@@ -104,7 +105,6 @@ class douUniversalServerPlugin(Star):
         self._active_source = "主源"
 
     def _scan_bg_images(self):
-        import random as _random
         desktop = Path.home() / "Desktop"
         imgs = []
         for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
@@ -113,17 +113,11 @@ class douUniversalServerPlugin(Star):
         return imgs
 
     def _apply_background(self, img: Image.Image) -> Image.Image:
-        import random as _random
         if not self._bg_images:
             return img
         try:
-            bg_path = _random.choice(self._bg_images)
-            bg = Image.open(bg_path).convert("RGB")
-            bg = bg.resize(img.size, Image.LANCZOS)
-            white = Image.new("RGB", img.size, (255, 255, 255))
-            blended = Image.blend(white, bg, 0.3)
-            blended.paste(img, (0, 0), img if img.mode == "RGBA" else None)
-            return blended
+            bg = Image.open(random.choice(self._bg_images)).convert("RGB").resize(img.size, Image.LANCZOS)
+            return Image.blend(img, bg, 0.3)
         except Exception:
             return img
 
@@ -2720,7 +2714,9 @@ class douUniversalServerPlugin(Star):
             (147, 51, 234), (8, 145, 178), (190, 18, 60), (21, 128, 61),
         ]
 
-        def _wrap(text, font, max_w):
+        tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+        def _wrap(text, font, max_w, d):
             lines = []
             for raw_line in text.split("\n"):
                 raw_line = raw_line.strip()
@@ -2728,7 +2724,7 @@ class douUniversalServerPlugin(Star):
                     continue
                 while raw_line:
                     for cut in range(len(raw_line), 0, -1):
-                        if draw.textbbox((0, 0), raw_line[:cut], font=font)[2] <= max_w:
+                        if d.textbbox((0, 0), raw_line[:cut], font=font)[2] <= max_w:
                             lines.append(raw_line[:cut])
                             raw_line = raw_line[cut:].lstrip()
                             break
@@ -2742,9 +2738,8 @@ class douUniversalServerPlugin(Star):
         min_row_h = 58
 
         for r in results:
-            name = r["name"][:40] or f"#{r['id']}"
             info = r["info"][:200] if r["info"] else ""
-            info_lines = _wrap(info, f_info, info_max_w)
+            info_lines = _wrap(info, f_info, info_max_w, tmp_draw)
             n_info = min(len(info_lines), 4)
             extra_h = n_info * 16
             row_heights.append(max(min_row_h, 40 + extra_h))
@@ -2775,7 +2770,7 @@ class douUniversalServerPlugin(Star):
             draw.text((col_name, y + 26), ip_port, fill=(150, 150, 150), font=f_small)
 
             info = r["info"][:200] if r["info"] else ""
-            info_lines = _wrap(info, f_info, info_max_w)
+            info_lines = _wrap(info, f_info, info_max_w, draw)
             iy = y + 6
             for li, line in enumerate(info_lines[:4]):
                 draw.text((col_name + 210, iy), line[:55], fill=(100, 100, 100), font=f_info)
