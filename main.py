@@ -95,6 +95,7 @@ class douUniversalServerPlugin(Star):
         self.retract_seconds = GLOBAL_DATA.get("retract_seconds", 30)
         self._session_lock = asyncio.Lock()
         self._font_cache = {}
+        self._bg_images = self._scan_bg_images()
         self._data_lock = asyncio.Lock()
         self._cn_cache: dict[int, dict] = {}
         self._cn_cache_ts = 0.0
@@ -102,11 +103,34 @@ class douUniversalServerPlugin(Star):
         self._mh_cache_ts = 0.0
         self._active_source = "主源"
 
+    def _scan_bg_images(self):
+        import random as _random
+        desktop = Path.home() / "Desktop"
+        imgs = []
+        for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
+            for p in desktop.glob(ext):
+                imgs.append(p)
+        return imgs
+
+    def _apply_background(self, img: Image.Image) -> Image.Image:
+        """白底+随机桌面图片0.3透明度作为背景"""
+        import random as _random
+        if not self._bg_images:
+            return img
+        try:
+            bg_path = _random.choice(self._bg_images)
+            bg = Image.open(bg_path).convert("RGB")
+            bg = bg.resize(img.size, Image.LANCZOS)
+            white = Image.new("RGB", img.size, (255, 255, 255))
+            blended = Image.blend(white, bg, 0.3)
+            blended.paste(img, (0, 0), img if img.mode == "RGBA" else None)
+            return blended
+        except Exception:
+            return img
+
     async def _atomic_save(self):
-        """在锁内保存 GLOBAL_DATA，防止与后台循环竞态"""
         async with self._data_lock:
-            await self._atomic_save()
-        self._pending_tasks: set[asyncio.Task] = set()
+            save_server_data(GLOBAL_DATA)
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
         """创建可追踪的fire-and-forget任务，teardown时可cancel"""
@@ -474,6 +498,7 @@ class douUniversalServerPlugin(Star):
         img_h = title_h + num_rows * row_h + 10
         bg = (255, 255, 255)
         img = Image.new("RGB", (img_w, img_h), bg)
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
 
         draw.text((20, 12), f"{title} 在线人数趋势", fill=(34, 34, 34), font=f_title)
@@ -1154,6 +1179,7 @@ class douUniversalServerPlugin(Star):
         img_w = 750
         img_h = 60 + len(server_data) * row_h + 10
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
         col1, col2, col3, col4, col5 = 20, 200, 290, 370, 450
         title_str = group_name if group_name else "全部"
@@ -1575,6 +1601,7 @@ class douUniversalServerPlugin(Star):
         img_w = 820
         img_h = margin + len(rows) * line_h + 20
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
         y = 15
         for rtype, rdata in rows:
@@ -2384,6 +2411,7 @@ class douUniversalServerPlugin(Star):
         img_w = 900
         img_h = len(rows) * row_h + 40
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
         for i, line in enumerate(rows):
             y = 15 + i * row_h
@@ -2644,6 +2672,7 @@ class douUniversalServerPlugin(Star):
         img_w = 900
         img_h = 50 + len(body_lines) * line_h + 20
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
         draw.text((margin, 12), title, fill=(34, 34, 34), font=f_title)
         y = 45
@@ -2857,6 +2886,7 @@ class douUniversalServerPlugin(Star):
         dark = (31, 41, 55)
 
         img = Image.new("RGB", (img_w, img_h), bg_color)
+        img = self._apply_background(img)
         draw = ImageDraw.Draw(img)
 
         draw.rectangle([(margin, 8), (img_w - margin, img_h - 8)], radius=12, fill=card_color)
