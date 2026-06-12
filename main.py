@@ -44,6 +44,9 @@ API_CN = "https://public-lobby-api.scpslgame.top/api?key=scpslgame_cn"
 API_CN_TTL = 60
 API_MH = "https://scp.manghui.net/list/"
 API_MH_TTL = 120
+FETCH_TIMEOUT = 6
+FETCH_SLOW_TIMEOUT = 10
+USER_QUERY_TIMEOUT = 5
 
 _active_instance_id = None
 _active_lock = asyncio.Lock()
@@ -160,11 +163,15 @@ class douUniversalServerPlugin(Star):
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AstrBot-SCP-Query/4.1",
                         "Accept": "application/json",
                         "Accept-Encoding": "gzip, deflate",
+                        "Connection": "keep-alive",
                     }
-                    connector = aiohttp.TCPConnector(limit=20, limit_per_host=10, ttl_dns_cache=300)
-                    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                    connector = aiohttp.TCPConnector(limit=20, limit_per_host=10, ttl_dns_cache=300, keepalive_timeout=30)
+                    timeout = aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT, connect=4)
                     self.session = aiohttp.ClientSession(headers=headers, connector=connector, timeout=timeout)
         return self.session
+
+    async def _fetch_with_timeout(self, url, sid=None, timeout=USER_QUERY_TIMEOUT):
+        return await asyncio.wait_for(self._fetch(url, sid=sid), timeout=timeout)
 
     async def _fetch(self, url, sid=None):
         now_ts = datetime.now().timestamp()
@@ -183,7 +190,7 @@ class douUniversalServerPlugin(Star):
                         async def _bg_refresh():
                             try:
                                 session = await self._get_session()
-                                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                                async with session.get(url, timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT)) as resp:
                                     if resp.status == 200:
                                         data = await resp.json()
                                         self.server_cache[cache_key] = {"ts": now_ts, "data": data}
@@ -205,7 +212,7 @@ class douUniversalServerPlugin(Star):
                 return entry2.get("data")
             try:
                 session = await self._get_session()
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         self.server_cache[cache_key] = {"ts": now_ts, "data": data}
@@ -251,7 +258,7 @@ class douUniversalServerPlugin(Star):
                 if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
                     try:
                         session = await self._get_session()
-                        async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
                             if resp.status == 200:
                                 raw = await resp.json()
                                 servers = raw.get("data", []) if isinstance(raw, dict) else []
@@ -341,7 +348,7 @@ class douUniversalServerPlugin(Star):
                 if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
                     try:
                         session = await self._get_session()
-                        async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
                             if resp.status == 200:
                                 html = await resp.text()
                                 new_cache = await asyncio.to_thread(self._parse_mh_html, html)
@@ -705,7 +712,11 @@ class douUniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         urls_sids = [(f"{API_BASE}{s['id']}", s["id"]) for s in servers]
-        results = await asyncio.gather(*(self._fetch(url, sid=sid) for url, sid in urls_sids))
+        results = await asyncio.gather(
+            *(self._fetch_with_timeout(url, sid=sid, timeout=USER_QUERY_TIMEOUT) for url, sid in urls_sids),
+            return_exceptions=True
+        )
+        results = [r if isinstance(r, dict) else None for r in results]
         for s, data in zip(servers, results):
             if data and data.get("online", True):
                 players = data.get("players", 0)
@@ -714,8 +725,11 @@ class douUniversalServerPlugin(Star):
                 status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                 lines.append(status_str)
             else:
-                x_cn = await self._fetch_cn(s["id"])
-                x_mh = await self._fetch_manghui(s["id"])
+                x_cn, x_mh = await asyncio.gather(
+                    self._fetch_cn(s["id"]), self._fetch_manghui(s["id"]), return_exceptions=True
+                )
+                if isinstance(x_cn, BaseException): x_cn = None
+                if isinstance(x_mh, BaseException): x_mh = None
                 cn_ok = x_cn and x_cn.get("online", True) and str(x_cn.get("players", "0/0")).split("/")[0] != "0"
                 mh_ok = x_mh and x_mh.get("online", True) and str(x_mh.get("players", "0/0")).split("/")[0] != "0"
                 if cn_ok or mh_ok:
@@ -777,7 +791,11 @@ class douUniversalServerPlugin(Star):
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
         flat_servers = [(s, f"{API_BASE}{s['id']}") for sg in sub_groups for s in sg]
-        flat_results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for s, url in flat_servers))
+        flat_results = await asyncio.gather(
+            *(self._fetch_with_timeout(url, sid=s["id"], timeout=USER_QUERY_TIMEOUT) for s, url in flat_servers),
+            return_exceptions=True
+        )
+        flat_results = [r if isinstance(r, dict) else None for r in flat_results]
         result_map = {s["id"]: data for (s, _), data in zip(flat_servers, flat_results)}
         for sg in sub_groups:
             for s in sg:
@@ -789,8 +807,11 @@ class douUniversalServerPlugin(Star):
                     status_str = f"{s['display_name']} {players}/{max_players}" if max_players is not None else f"{s['display_name']} {players}"
                     lines.append(status_str)
                 else:
-                    x_cn = await self._fetch_cn(s["id"])
-                    x_mh = await self._fetch_manghui(s["id"])
+                    x_cn, x_mh = await asyncio.gather(
+                        self._fetch_cn(s["id"]), self._fetch_manghui(s["id"]), return_exceptions=True
+                    )
+                    if isinstance(x_cn, BaseException): x_cn = None
+                    if isinstance(x_mh, BaseException): x_mh = None
                     cn_ok = x_cn and x_cn.get("online", True) and str(x_cn.get("players", "0/0")).split("/")[0] != "0"
                     mh_ok = x_mh and x_mh.get("online", True) and str(x_mh.get("players", "0/0")).split("/")[0] != "0"
                     if cn_ok or mh_ok:
@@ -819,15 +840,22 @@ class douUniversalServerPlugin(Star):
             lines.append("暂无启用的服务器")
             lines.append("==============")
             return lines
-        results = await asyncio.gather(*(self._fetch(f"{API_BASE}{srv['id']}", sid=srv["id"]) for srv in active_servers))
+        results = await asyncio.gather(
+            *(self._fetch_with_timeout(f"{API_BASE}{srv['id']}", sid=srv["id"], timeout=USER_QUERY_TIMEOUT) for srv in active_servers),
+            return_exceptions=True
+        )
+        results = [r if isinstance(r, dict) else None for r in results]
         for s, data in zip(active_servers, results):
             if data:
                 ip, port = data.get("ip", ""), data.get("port", "")
                 if ip and port:
                     lines.insert(-1, f"[{s['group']}] {s['display_name']} > {ip}:{port}")
                 else:
-                    x_cn = await self._fetch_cn(s["id"])
-                    x_mh = await self._fetch_manghui(s["id"])
+                    x_cn, x_mh = await asyncio.gather(
+                        self._fetch_cn(s["id"]), self._fetch_manghui(s["id"]), return_exceptions=True
+                    )
+                    if isinstance(x_cn, BaseException): x_cn = None
+                    if isinstance(x_mh, BaseException): x_mh = None
                     alt_ip = ""
                     alt_port = ""
                     if x_cn and x_cn.get("ip"):
@@ -839,8 +867,11 @@ class douUniversalServerPlugin(Star):
                     else:
                         lines.insert(-1, f"[{s['group']}] {s['display_name']} > 端口信息异常")
             else:
-                x_cn = await self._fetch_cn(s["id"])
-                x_mh = await self._fetch_manghui(s["id"])
+                x_cn, x_mh = await asyncio.gather(
+                    self._fetch_cn(s["id"]), self._fetch_manghui(s["id"]), return_exceptions=True
+                )
+                if isinstance(x_cn, BaseException): x_cn = None
+                if isinstance(x_mh, BaseException): x_mh = None
                 alt_ip = ""
                 alt_port = ""
                 if x_cn and x_cn.get("ip"):
@@ -887,7 +918,15 @@ class douUniversalServerPlugin(Star):
             self.alert_task = asyncio.create_task(self._alert_loop())
         if self.report_task is None or self.report_task.done():
             self.report_task = asyncio.create_task(self._report_loop())
+        self._create_tracked_task(self._warm_caches())
         self.start_tg_polling()
+
+    async def _warm_caches(self):
+        await asyncio.sleep(3)
+        try:
+            await asyncio.gather(self._fetch_cn("0"), self._fetch_manghui("0"), return_exceptions=True)
+        except Exception:
+            pass
 
     async def _alert_loop(self):
         await asyncio.sleep(60)
@@ -1650,7 +1689,11 @@ class douUniversalServerPlugin(Star):
                     continue
                 lines.append(f"--- {g} INFO ---")
                 urls = [f"{API_BASE}{s['id']}" for s in g_servers]
-                results = await asyncio.gather(*(self._fetch(url, sid=s["id"]) for url, s in zip(urls, g_servers)))
+                results = await asyncio.gather(
+                    *(self._fetch_with_timeout(url, sid=s["id"], timeout=USER_QUERY_TIMEOUT) for url, s in zip(urls, g_servers)),
+                    return_exceptions=True
+                )
+                results = [r if isinstance(r, dict) else None for r in results]
                 for s, data in zip(g_servers, results):
                     if data:
                         info = re.sub(r'<[^>]+>', '', data.get("info", "")).strip()
@@ -3320,7 +3363,7 @@ class douUniversalServerPlugin(Star):
             form.add_field("caption", caption[:200])
             form.add_field("photo", img_bytes, filename=os.path.basename(img_path), content_type="image/png")
             session = await self._get_session()
-            await session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=15))
+            await session.post(url, data=form, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT))
         except Exception as e:
             logger.debug(f"non-critical: {e}")
             pass
@@ -3389,7 +3432,7 @@ class douUniversalServerPlugin(Star):
             existing = [int(p.stem) for p in bg_dir.glob("*.jpg") if p.stem.isdigit()]
             idx = max(existing) + 1 if existing else 1
             save_path = bg_dir / f"{idx}.jpg"
-            async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
                     with open(save_path, "wb") as f:
