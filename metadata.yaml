@@ -1,10 +1,13 @@
 name: astrbot_plugin_niufu
 display_name: SCP:SL服务器查询
-version: 4.0
+version: 4.1
 author: 内战狂热爱好者
-description: 查询多个SCP:SL服务器的在线人数和 IP 端口，支持端口显示独立开关
+description: >-
+  多数据源SCP:SL服务器监控，支持在线人数查询、IP端口映射、历史趋势、
+  三源交叉验证告警、服务器搜索、详情卡片、背景图自定义、定时统计、
+  黑名单/模糊匹配/群绑定等完整管理功能
 support_platforms: ["aiocqhttp", "qq_official", "telegram"]
-dependencies: ["aiohttp", "Pillow"]
+dependencies: ["aiohttp", "Pillow", "brotlipy"]
 repo: https://github.com/0720xxz/astrbot_plugin_niufu
 category: game
-tags: ["scp", "server", "query","sl","niu","bigniuniu"]
+tags: ["scp", "server", "query", "sl", "monitor", "alert"]
