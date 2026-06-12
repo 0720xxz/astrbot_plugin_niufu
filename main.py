@@ -173,35 +173,6 @@ class douUniversalServerPlugin(Star):
     async def _fetch_with_timeout(self, url, sid=None, timeout=USER_QUERY_TIMEOUT):
         return await asyncio.wait_for(self._fetch(url, sid=sid), timeout=timeout)
 
-    async def _fetch_race(self, sid):
-        """三源竞速：同时请求主源+CN+MH，返回最先成功的"""
-        url = f"{API_BASE}{sid}"
-        async def _fetch_or_none(fn, *args):
-            try:
-                return await fn(*args)
-            except Exception:
-                return None
-        tasks = [
-            asyncio.create_task(_fetch_or_none(self._fetch, url, sid=sid)),
-            asyncio.create_task(_fetch_or_none(self._fetch_cn, sid)),
-            asyncio.create_task(_fetch_or_none(self._fetch_manghui, sid)),
-        ]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=USER_QUERY_TIMEOUT)
-        for t in pending:
-            t.cancel()
-        for t in done:
-            result = t.result()
-            if result and result.get("online", True):
-                now_ts = datetime.now().timestamp()
-                self.server_cache[sid] = {"ts": now_ts, "data": result}
-                self._cache_dirty = True
-                return result
-        for t in done:
-            result = t.result()
-            if result is not None:
-                return result
-        return None
-
     async def _fetch(self, url, sid=None):
         now_ts = datetime.now().timestamp()
         cache_key = sid if sid else url
@@ -741,7 +712,7 @@ class douUniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         results = await asyncio.gather(
-            *(self._fetch_race(s["id"]) for s in servers),
+            *(self._fetch_with_timeout(f"{API_BASE}{s['id']}", sid=s["id"], timeout=USER_QUERY_TIMEOUT) for s in servers),
             return_exceptions=True
         )
         results = [r if isinstance(r, dict) else None for r in results]
@@ -819,7 +790,7 @@ class douUniversalServerPlugin(Star):
         for sg in sub_groups:
             sg.sort(key=lambda x: self._extract_number(x["display_name"]))
         flat_results = await asyncio.gather(
-            *(self._fetch_race(s["id"]) for s in all_servers),
+            *(self._fetch_with_timeout(f"{API_BASE}{s['id']}", sid=s["id"], timeout=USER_QUERY_TIMEOUT) for s in all_servers),
             return_exceptions=True
         )
         flat_results = [r if isinstance(r, dict) else None for r in flat_results]
@@ -868,7 +839,7 @@ class douUniversalServerPlugin(Star):
             lines.append("==============")
             return lines
         results = await asyncio.gather(
-            *(self._fetch_race(srv["id"]) for srv in active_servers),
+            *(self._fetch_with_timeout(f"{API_BASE}{srv['id']}", sid=srv["id"], timeout=USER_QUERY_TIMEOUT) for srv in active_servers),
             return_exceptions=True
         )
         results = [r if isinstance(r, dict) else None for r in results]
@@ -932,7 +903,7 @@ class douUniversalServerPlugin(Star):
     async def _force_refresh_all(self):
         try:
             groups = set(s["group"] for s in GLOBAL_DATA["servers"])
-            await asyncio.gather(*(self._fetch_race(s["id"]) for s in GLOBAL_DATA["servers"] if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)), return_exceptions=True)
+            await asyncio.gather(*(self._fetch_with_timeout(f"{API_BASE}{s['id']}", sid=s["id"], timeout=USER_QUERY_TIMEOUT) for s in GLOBAL_DATA["servers"] if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)), return_exceptions=True)
         except Exception as e:
             logger.debug(f"non-critical: {e}")
             pass
@@ -1725,7 +1696,7 @@ class douUniversalServerPlugin(Star):
                     continue
                 lines.append(f"--- {g} INFO ---")
                 results = await asyncio.gather(
-                    *(self._fetch_race(s["id"]) for s in g_servers),
+                    *(self._fetch_with_timeout(f"{API_BASE}{s['id']}", sid=s["id"], timeout=USER_QUERY_TIMEOUT) for s in g_servers),
                     return_exceptions=True
                 )
                 results = [r if isinstance(r, dict) else None for r in results]
