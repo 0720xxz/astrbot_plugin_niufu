@@ -165,7 +165,7 @@ class douUniversalServerPlugin(Star):
                         "Accept-Encoding": "gzip, deflate",
                         "Connection": "keep-alive",
                     }
-                    connector = aiohttp.TCPConnector(limit=20, limit_per_host=10, ttl_dns_cache=300, keepalive_timeout=30)
+                    connector = aiohttp.TCPConnector(limit=60, limit_per_host=30, ttl_dns_cache=300, keepalive_timeout=30, force_close=False)
                     timeout = aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT, connect=4)
                     self.session = aiohttp.ClientSession(headers=headers, connector=connector, timeout=timeout)
         return self.session
