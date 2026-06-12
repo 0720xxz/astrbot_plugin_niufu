@@ -107,8 +107,11 @@ class douUniversalServerPlugin(Star):
         self._data_lock = asyncio.Lock()
         self._cn_cache: dict[int, dict] = {}
         self._cn_cache_ts = 0.0
+        self._cn_lock = asyncio.Lock()
         self._mh_cache: dict[int, dict] = {}
         self._mh_cache_ts = 0.0
+        self._mh_lock = asyncio.Lock()
+        self._fetch_locks: dict[str, asyncio.Lock] = {}
         self._trust_pool = dict(GLOBAL_DATA.get("trust_pool", {"主源": 5, "CN": 4, "MH": 3}))
         self._active_source = "主源"
 
@@ -158,7 +161,9 @@ class douUniversalServerPlugin(Star):
                         "Accept": "application/json",
                         "Accept-Encoding": "gzip, deflate",
                     }
-                    self.session = aiohttp.ClientSession(headers=headers)
+                    connector = aiohttp.TCPConnector(limit=20, limit_per_host=10, ttl_dns_cache=300)
+                    timeout = aiohttp.ClientTimeout(total=15, connect=5)
+                    self.session = aiohttp.ClientSession(headers=headers, connector=connector, timeout=timeout)
         return self.session
 
     async def _fetch(self, url, sid=None):
@@ -175,40 +180,50 @@ class douUniversalServerPlugin(Star):
                         cached_data = None
                 if cached_data is not None:
                     if age > self.cache_ttl * 0.4:
-                        try:
-                            session = await self._get_session()
-                            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                                if resp.status == 200:
-                                    data = await resp.json()
-                                    self.server_cache[cache_key] = {"ts": now_ts, "data": data}
-                                    self._cache_dirty = True
-                                    self._store_raw_response(sid, data)
-                                    return data
-                        except Exception as e:
-                            logger.debug(f"non-critical: {e}")
-                            pass
+                        async def _bg_refresh():
+                            try:
+                                session = await self._get_session()
+                                async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                                    if resp.status == 200:
+                                        data = await resp.json()
+                                        self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                                        self._cache_dirty = True
+                                        self._store_raw_response(sid, data)
+                            except Exception:
+                                pass
+                        self._create_tracked_task(_bg_refresh())
                     return cached_data
-        try:
-            session = await self._get_session()
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    self.server_cache[cache_key] = {"ts": now_ts, "data": data}
-                    if len(self.server_cache) > 100:
-                        stale = sorted(self.server_cache.keys(), key=lambda k: self.server_cache[k].get("ts", 0))[:-50]
-                        for k in stale:
-                            self.server_cache.pop(k, None)
-                    self._cache_dirty = True
-                    self._store_raw_response(sid, data)
-                    return data
-                else:
-                    msg = f"API 返回非 200 状态码: {resp.status} - {url}"
-                    logger.warning(f"[服务器框架] {msg}")
-                    self._log_error(msg)
-        except Exception as e:
-            msg = f"获取服务器数据失败: {e} - {url}"
-            logger.warning(f"[服务器框架] {msg}")
-            self._log_error(msg)
+        key = str(cache_key)
+        if key not in self._fetch_locks:
+            self._fetch_locks[key] = asyncio.Lock()
+        lock = self._fetch_locks[key]
+        if len(self._fetch_locks) > 200:
+            self._fetch_locks.clear()
+        async with lock:
+            entry2 = self.server_cache.get(cache_key)
+            if entry2 and (now_ts - entry2.get("ts", 0)) < self.cache_ttl:
+                return entry2.get("data")
+            try:
+                session = await self._get_session()
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                        if len(self.server_cache) > 200:
+                            stale = sorted(self.server_cache, key=lambda k: self.server_cache[k].get("ts", 0))[:100]
+                            for k in stale:
+                                self.server_cache.pop(k, None)
+                        self._cache_dirty = True
+                        self._store_raw_response(sid, data)
+                        return data
+                    else:
+                        msg = f"API 返回非 200 状态码: {resp.status} - {url}"
+                        logger.warning(f"[服务器框架] {msg}")
+                        self._log_error(msg)
+            except Exception as e:
+                msg = f"获取服务器数据失败: {e} - {url}"
+                logger.warning(f"[服务器框架] {msg}")
+                self._log_error(msg)
         if sid is not None:
             if self._active_source != "主源":
                 preferred = await (self._fetch_cn(sid) if self._active_source == "备份1" else self._fetch_manghui(sid))
@@ -216,8 +231,12 @@ class douUniversalServerPlugin(Star):
                     self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": preferred}
                     self._cache_dirty = True
                     return preferred
-            for fallback_fn in (self._fetch_cn, self._fetch_manghui):
-                fallback = await fallback_fn(sid)
+            fallback_cn, fallback_mh = await asyncio.gather(
+                self._fetch_cn(sid), self._fetch_manghui(sid), return_exceptions=True
+            )
+            for fallback in (fallback_cn, fallback_mh):
+                if isinstance(fallback, BaseException):
+                    continue
                 if fallback is not None:
                     self.server_cache[sid] = {"ts": datetime.now().timestamp(), "data": fallback}
                     self._cache_dirty = True
@@ -228,101 +247,110 @@ class douUniversalServerPlugin(Star):
         import base64
         now_ts = datetime.now().timestamp()
         if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
-            try:
-                session = await self._get_session()
-                async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
-                        raw = await resp.json()
-                        servers = raw.get("data", []) if isinstance(raw, dict) else []
-                        new_cache = {}
-                        for s in servers:
-                            sid_val = s.get("serverId")
-                            if sid_val is None:
-                                continue
-                            players_str = str(s.get("players", "0/0"))
-                            p = int(players_str.split("/")[0]) if "/" in players_str else 0
-                            m = int(players_str.split("/")[1]) if "/" in players_str else 0
-                            info_raw = s.get("info", "")
-                            try:
-                                info_decoded = base64.b64decode(info_raw).decode("utf-8", errors="replace")
-                                info_decoded = re.sub(r"<[^>]+>", "", info_decoded).strip()
-                                info_decoded = re.sub(r"\s+", " ", info_decoded)
-                            except Exception:
-                                info_decoded = ""
-                            new_cache[sid_val] = {
-                                "ip": s.get("ip", ""),
-                                "port": s.get("port", ""),
-                                "players": players_str,
-                                "max_players": m,
-                                "online": True,
-                                "info": info_decoded,
-                                "version": s.get("version", ""),
-                                "modded": s.get("modded", False),
-                                "distance": s.get("distance", 0),
-                            }
-                        self._cn_cache = new_cache
-                        self._cn_cache_ts = now_ts
-                        logger.info(f"[服务器框架] CN API缓存已刷新: {len(new_cache)}个服务器")
-            except Exception as e:
-                logger.debug(f"non-critical: _fetch_cn refresh failed: {e}")
-                pass
+            async with self._cn_lock:
+                if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
+                    try:
+                        session = await self._get_session()
+                        async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            if resp.status == 200:
+                                raw = await resp.json()
+                                servers = raw.get("data", []) if isinstance(raw, dict) else []
+                                new_cache = {}
+                                for s in servers:
+                                    sid_val = s.get("serverId")
+                                    if sid_val is None:
+                                        continue
+                                    players_str = str(s.get("players", "0/0"))
+                                    p = int(players_str.split("/")[0]) if "/" in players_str else 0
+                                    m = int(players_str.split("/")[1]) if "/" in players_str else 0
+                                    info_raw = s.get("info", "")
+                                    try:
+                                        info_decoded = base64.b64decode(info_raw).decode("utf-8", errors="replace")
+                                        info_decoded = re.sub(r"<[^>]+>", "", info_decoded).strip()
+                                        info_decoded = re.sub(r"\s+", " ", info_decoded)
+                                    except Exception:
+                                        info_decoded = ""
+                                    new_cache[sid_val] = {
+                                        "ip": s.get("ip", ""),
+                                        "port": s.get("port", ""),
+                                        "players": players_str,
+                                        "max_players": m,
+                                        "online": True,
+                                        "info": info_decoded,
+                                        "version": s.get("version", ""),
+                                        "modded": s.get("modded", False),
+                                        "distance": s.get("distance", 0),
+                                    }
+                                self._cn_cache = new_cache
+                                self._cn_cache_ts = now_ts
+                                logger.info(f"[服务器框架] CN API缓存已刷新: {len(new_cache)}个服务器")
+                    except Exception as e:
+                        logger.debug(f"non-critical: _fetch_cn refresh failed: {e}")
+                        pass
         sid_int = int(sid) if sid else 0
         return self._cn_cache.get(sid_int)
+
+    @staticmethod
+    def _parse_mh_html(html: str) -> dict:
+        new_cache = {}
+        row_pattern = re.compile(r'<tr[^>]*>\s*(.*?)\s*</tr>', re.DOTALL)
+        cell_pattern = re.compile(r'<td[^>]*>(.*?)</td>', re.DOTALL)
+        tag_strip = re.compile(r'<[^>]+>')
+        ws_collapse = re.compile(r'\s+')
+        for row_match in row_pattern.finditer(html):
+            cells = cell_pattern.findall(row_match.group(1))
+            if len(cells) < 6:
+                continue
+            sid_str = tag_strip.sub('', cells[0]).strip()
+            ip_port = tag_strip.sub('', cells[1]).strip()
+            desc = tag_strip.sub('', cells[2]).strip()
+            desc = ws_collapse.sub(' ', desc)
+            players_str = tag_strip.sub('', cells[3]).strip()
+            if not sid_str.isdigit():
+                continue
+            sid_val = int(sid_str)
+            ip = ""
+            port = ""
+            if ":" in ip_port:
+                parts = ip_port.rsplit(":", 1)
+                ip = parts[0]
+                port = parts[1]
+            p = 0
+            m = 0
+            if "/" in players_str:
+                pp = players_str.split("/")
+                p = int(pp[0]) if pp[0].isdigit() else 0
+                m = int(pp[1]) if pp[1].isdigit() else 0
+            new_cache[sid_val] = {
+                "ip": ip,
+                "port": port,
+                "players": players_str,
+                "max_players": m,
+                "online": True,
+                "info": desc,
+                "version": "",
+                "modded": "Exiled" in (tag_strip.sub('', cells[5]) if len(cells) > 5 else ""),
+                "distance": 0,
+            }
+        return new_cache
 
     async def _fetch_manghui(self, sid: str):
         now_ts = datetime.now().timestamp()
         if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
-            try:
-                session = await self._get_session()
-                async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status == 200:
-                        html = await resp.text()
-                        new_cache = {}
-                        row_pattern = re.compile(r'<tr[^>]*>\s*(.*?)\s*</tr>', re.DOTALL)
-                        cell_pattern = re.compile(r'<td[^>]*>(.*?)</td>', re.DOTALL)
-                        tag_strip = re.compile(r'<[^>]+>')
-                        ws_collapse = re.compile(r'\s+')
-                        for row_match in row_pattern.finditer(html):
-                            cells = cell_pattern.findall(row_match.group(1))
-                            if len(cells) < 6:
-                                continue
-                            sid_str = tag_strip.sub('', cells[0]).strip()
-                            ip_port = tag_strip.sub('', cells[1]).strip()
-                            desc = tag_strip.sub('', cells[2]).strip()
-                            desc = ws_collapse.sub(' ', desc)
-                            players_str = tag_strip.sub('', cells[3]).strip()
-                            if not sid_str.isdigit():
-                                continue
-                            sid_val = int(sid_str)
-                            ip = ""
-                            port = ""
-                            if ":" in ip_port:
-                                parts = ip_port.rsplit(":", 1)
-                                ip = parts[0]
-                                port = parts[1]
-                            p = 0
-                            m = 0
-                            if "/" in players_str:
-                                pp = players_str.split("/")
-                                p = int(pp[0]) if pp[0].isdigit() else 0
-                                m = int(pp[1]) if pp[1].isdigit() else 0
-                            new_cache[sid_val] = {
-                                "ip": ip,
-                                "port": port,
-                                "players": players_str,
-                                "max_players": m,
-                                "online": True,
-                                "info": desc,
-                                "version": "",
-                                "modded": "Exiled" in (tag_strip.sub('', cells[5]) if len(cells) > 5 else ""),
-                                "distance": 0,
-                            }
-                        self._mh_cache = new_cache
-                        self._mh_cache_ts = now_ts
-                        logger.info(f"[服务器框架] MH缓存已刷新: {len(new_cache)}个CN服务器")
-            except Exception as e:
-                logger.debug(f"non-critical: _fetch_manghui refresh failed: {e}")
-                pass
+            async with self._mh_lock:
+                if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
+                    try:
+                        session = await self._get_session()
+                        async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                            if resp.status == 200:
+                                html = await resp.text()
+                                new_cache = await asyncio.to_thread(self._parse_mh_html, html)
+                                self._mh_cache = new_cache
+                                self._mh_cache_ts = now_ts
+                                logger.info(f"[服务器框架] MH缓存已刷新: {len(new_cache)}个服务器")
+                    except Exception as e:
+                        logger.debug(f"non-critical: _fetch_manghui refresh failed: {e}")
+                        pass
         sid_int = int(sid) if sid else 0
         return self._mh_cache.get(sid_int)
 
