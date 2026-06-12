@@ -109,6 +109,7 @@ class douUniversalServerPlugin(Star):
         self._cn_cache_ts = 0.0
         self._mh_cache: dict[int, dict] = {}
         self._mh_cache_ts = 0.0
+        self._trust_pool = dict(GLOBAL_DATA.get("trust_pool", {"主源": 5, "CN": 4, "MH": 3}))
         self._active_source = "主源"
 
     def _scan_bg_images(self):
@@ -587,6 +588,14 @@ class douUniversalServerPlugin(Star):
         global _active_instance_id
         return _active_instance_id == id(self)
 
+    def _update_trust(self, source: str, agreed: bool):
+        if not agreed:
+            self._trust_pool[source] = max(0, self._trust_pool.get(source, 3) - 1)
+        else:
+            self._trust_pool[source] = min(10, self._trust_pool.get(source, 3) + 0.5)
+        GLOBAL_DATA["trust_pool"] = dict(self._trust_pool)
+        logger.info(f"[服务器框架] 信任池: 主源={self._trust_pool.get('主源',5)} CN={self._trust_pool.get('CN',4)} MH={self._trust_pool.get('MH',3)}")
+
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
         try:
             sender_id = str(event.get_sender_id())
@@ -980,29 +989,54 @@ class douUniversalServerPlugin(Star):
             cn_ok = _is_low(p_cn)
             mh_ok = _is_low(p_mh)
 
-            votes = sum(1 for v in (primary_ok, cn_ok, mh_ok) if v is True)
-            has_any = any(v is not None for v in (primary_ok, cn_ok, mh_ok))
-            confirmed = votes >= 2 or (votes >= 1 and not has_any) or not has_any
+            t_primary = self._trust_pool.get("主源", 5)
+            t_cn = self._trust_pool.get("CN", 4)
+            t_mh = self._trust_pool.get("MH", 3)
 
-            if votes == 1 and has_any:
+            votes = 0
+            total_trust = 0
+            for okv, tv in ((primary_ok, t_primary), (cn_ok, t_cn), (mh_ok, t_mh)):
+                if okv is not None:
+                    total_trust += tv
+                    if okv is True:
+                        votes += tv
+
+            confirmed = total_trust > 0 and votes > total_trust / 2
+
+            if not confirmed and votes > 0:
                 src_status = (
-                    f"主源={'异常' if primary_ok else '正常' if primary_ok is False else '无数据'} "
-                    f"CN={'异常' if cn_ok else '正常' if cn_ok is False else '无数据'} "
-                    f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'}"
+                    f"主源={'异常' if primary_ok else '正常' if primary_ok is False else '无数据'} T({t_primary}) "
+                    f"CN={'异常' if cn_ok else '正常' if cn_ok is False else '无数据'} T({t_cn}) "
+                    f"MH={'异常' if mh_ok else '正常' if mh_ok is False else '无数据'} T({t_mh})"
                 )
                 logger.warning(
-                    f"[服务器框架] 告警源不一致: {name} {src_status} votes={votes} → 跳过"
+                    f"[服务器框架] 告警源不一致: {name} {src_status} weighted={votes}/{total_trust} → 跳过"
+                )
             if confirmed:
                 if name not in self._alerted or is_override:
                     if is_override:
                         self._alerted.pop(name, None)
                         self._stable_count.pop(name, None)
+                    trust_info = f"信:主{t_primary}/CN{t_cn}/MH{t_mh} 票:{votes}/{total_trust}"
                     src_detail = f"p={p_primary} cn={p_cn} mh={p_mh}" if p_primary is not None or p_cn is not None or p_mh is not None else ""
-                    alert_msg = anomaly[1] + (f"\n三源验证: {src_detail}" if src_detail else "")
+                    alert_msg = anomaly[1] + (f"\n三源验证: {src_detail} [{trust_info}]" if src_detail else f"\n信任池: {trust_info}")
                     self._push_alert(grp, name, anomaly[0], alert_msg)
                     self._alerted[name] = anomaly[0]
                 if p == 0 and not was_zero and anomaly[0] == "正在重启":
                     self._was_zero[name] = True
+            if total_trust > 0:
+                if confirmed:
+                    for src, okv in (("主源", primary_ok), ("CN", cn_ok), ("MH", mh_ok)):
+                        if okv is True:
+                            self._update_trust(src, True)
+                        elif okv is False:
+                            self._update_trust(src, False)
+                elif votes > 0:
+                    for src, okv in (("主源", primary_ok), ("CN", cn_ok), ("MH", mh_ok)):
+                        if okv is True:
+                            self._update_trust(src, False)
+                        elif okv is False:
+                            self._update_trust(src, True)
         if name in self._alerted:
             if p > min_p:
                 cnt = self._stable_count.get(name, 0) + 1
@@ -3485,6 +3519,8 @@ class douUniversalServerPlugin(Star):
         results.append(f"历史: {len(self.server_history)}台 | 缓存: {len(self.server_cache)}条 | 错误: {len(self.error_logs)}条")
         results.append(f"绑定群: {len(self.group_bindings)}个 | 撤回: {self.retract_seconds}s | 频率: {self.history_interval}s | 缓存TTL: {self.cache_ttl}s")
         results.append(f"当前数据源: {self._active_source} | CN缓存: {len(self._cn_cache)}服 | MH缓存: {len(self._mh_cache)}服")
+        tp = self._trust_pool
+        results.append(f"信任池: 主源={tp.get('主源',5)} CN={tp.get('CN',4)} MH={tp.get('MH',3)}")
         bg_info = ", ".join([p.name for p in self._bg_images]) if self._bg_images else "无"
         results.append(f"背景图({len(self._bg_images)}): {bg_info}")
         for chunk in self._reply_at(event, "\n".join(results)):
