@@ -917,6 +917,43 @@ class douUniversalServerPlugin(Star):
                 pass
             await asyncio.sleep(30)
 
+    async def _webhook_push(self):
+        url = GLOBAL_DATA.get("webhook_url") or "https://scpslpost.1685153300.workers.dev/api/status"
+        if not url:
+            return
+        secret = GLOBAL_DATA.get("webhook_secret", "")
+        try:
+            servers = GLOBAL_DATA["servers"]
+            active = [s for s in servers if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
+            status_list = []
+            for s in active:
+                data = self.server_cache.get(s["id"], {}).get("data")
+                online = data.get("online", False) if data else False
+                status_list.append({"id": s["id"], "online": online})
+            payload = {
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "trust": dict(self._trust_pool),
+                "servers": status_list,
+                "alerts": [{"name": k, "type": v} for k, v in self._alerted.items()],
+            }
+            headers = {"Content-Type": "application/json"}
+            if secret:
+                headers["X-Webhook-Secret"] = secret
+            session = await self._get_session()
+            async with session.post(url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status not in (200, 204):
+                    logger.debug(f"webhook POST {url} returned {resp.status}")
+        except Exception:
+            pass
+
+    async def _webhook_loop(self):
+        await asyncio.sleep(3)
+        await self._webhook_push()
+        while not self._stopped:
+            await asyncio.sleep(600)
+            await self._webhook_push()
+
     def start_background_tasks(self):
         if getattr(self, '_stopped', False) or not self._is_active():
             return
@@ -926,6 +963,7 @@ class douUniversalServerPlugin(Star):
             self.report_task = asyncio.create_task(self._report_loop())
         self._create_tracked_task(self._warm_caches())
         self._create_tracked_task(self._prefetch_loop())
+        self._create_tracked_task(self._webhook_loop())
         self.start_tg_polling()
 
     async def _warm_caches(self):

@@ -40,6 +40,8 @@ DEFAULT_SERVER_DATA = {
     "alert_min_players": 20,
     "retract_seconds": 30,
     "trust_pool": {"主源": 5, "CN": 4, "MH": 3},
+    "webhook_url": "https://scpslpost.1685153300.workers.dev/api/status",
+    "webhook_secret": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "group_headers": {
