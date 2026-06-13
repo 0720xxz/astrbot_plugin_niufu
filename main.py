@@ -929,6 +929,16 @@ class douUniversalServerPlugin(Star):
                 pass
             await asyncio.sleep(30)
 
+    async def _tcp_ping(self, ip, port, timeout=3):
+        try:
+            t0 = datetime.now().timestamp()
+            _, writer = await asyncio.wait_for(asyncio.open_connection(ip, int(port)), timeout=timeout)
+            ms = int((datetime.now().timestamp() - t0) * 1000)
+            writer.close()
+            return ms
+        except Exception:
+            return None
+
     async def _webhook_push(self):
         url = GLOBAL_DATA.get("webhook_url") or "http://0720xxz.com:6186/api/status"
         if not url:
@@ -941,7 +951,12 @@ class douUniversalServerPlugin(Star):
             for s in active:
                 data = self.server_cache.get(s["id"], {}).get("data")
                 online = data.get("online", False) if data else False
-                status_list.append({"id": s["id"], "online": online})
+                ip = data.get("ip", "") if data else ""
+                port = data.get("port", "") if data else ""
+                ping = None
+                if ip and port:
+                    ping = await self._tcp_ping(ip, port, timeout=3)
+                status_list.append({"id": s["id"], "online": online, "ping": ping, "ip": ip, "port": port})
             payload = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "trust": dict(self._trust_pool),
