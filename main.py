@@ -3693,6 +3693,24 @@ class douUniversalServerPlugin(Star):
                 logger.debug(f"non-critical: {e}")
                 pass
 
+    @filter.command("连接")
+    async def cmd_check_conn(self, event: AstrMessageEvent):
+        self._log_command(event, "/连接")
+        results = [" 服务器连接检测", "================"]
+        web80 = await self._tcp_ping("0720xxz.com", 80, timeout=3)
+        web6186 = await self._tcp_ping("0720xxz.com", 6186, timeout=3)
+        results.append(f"Web(80):    {'{}ms'.format(web80) if web80 else '不可达'}")
+        results.append(f"Hook(6186): {'{}ms'.format(web6186) if web6186 else '不可达'}")
+        results.append("================")
+        results.append(f"服务器IP: 154.37.222.5 | 域名: 0720xxz.com")
+        for chunk in self._reply_at(event, "\n".join(results)):
+            yield chunk
+
+    @filter.command("检查连接")
+    async def cmd_check_conn_cn(self, event: AstrMessageEvent):
+        async for chunk in self.cmd_check_conn(event):
+            yield chunk
+
     async def teardown(self):
         global _active_instance_id
         self._stopped = True
