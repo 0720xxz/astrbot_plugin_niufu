@@ -1472,6 +1472,8 @@ class douUniversalServerPlugin(Star):
         for cmd in registered_commands:
             if cmd in msg_lower:
                 return
+            if cmd.startswith("/") and cmd[1:] in msg_lower:
+                return
         trigger_keywords = ["炸了", "服务器炸了", "炸服", "卡了", "连不上", "宕机", "崩了"]
         if any(keyword in msg_lower for keyword in trigger_keywords):
             self._log_command(event, msg)
