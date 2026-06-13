@@ -256,7 +256,8 @@ class douUniversalServerPlugin(Star):
         now_ts = datetime.now().timestamp()
         if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
             async with self._cn_lock:
-                if not self._cn_cache or (now_ts - self._cn_cache_ts) > API_CN_TTL:
+                now_ts_fresh = datetime.now().timestamp()
+                if not self._cn_cache or (now_ts_fresh - self._cn_cache_ts) > API_CN_TTL:
                     try:
                         session = await self._get_session()
                         async with session.get(API_CN, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
@@ -290,9 +291,10 @@ class douUniversalServerPlugin(Star):
                                         "distance": s.get("distance", 0),
                                     }
                                 self._cn_cache = new_cache
-                                self._cn_cache_ts = now_ts
+                                self._cn_cache_ts = now_ts_fresh
                                 logger.info(f"[服务器框架] CN API缓存已刷新: {len(new_cache)}个服务器")
                     except Exception as e:
+                        self._cn_cache_ts = now_ts_fresh - API_CN_TTL + 30
                         logger.debug(f"non-critical: _fetch_cn refresh failed: {e}")
                         pass
         sid_int = int(sid) if sid else 0
@@ -346,7 +348,8 @@ class douUniversalServerPlugin(Star):
         now_ts = datetime.now().timestamp()
         if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
             async with self._mh_lock:
-                if not self._mh_cache or (now_ts - self._mh_cache_ts) > API_MH_TTL:
+                now_ts_fresh = datetime.now().timestamp()
+                if not self._mh_cache or (now_ts_fresh - self._mh_cache_ts) > API_MH_TTL:
                     try:
                         session = await self._get_session()
                         async with session.get(API_MH, timeout=aiohttp.ClientTimeout(total=FETCH_SLOW_TIMEOUT)) as resp:
@@ -354,9 +357,10 @@ class douUniversalServerPlugin(Star):
                                 html = await resp.text()
                                 new_cache = await asyncio.to_thread(self._parse_mh_html, html)
                                 self._mh_cache = new_cache
-                                self._mh_cache_ts = now_ts
+                                self._mh_cache_ts = now_ts_fresh
                                 logger.info(f"[服务器框架] MH缓存已刷新: {len(new_cache)}个服务器")
                     except Exception as e:
+                        self._mh_cache_ts = now_ts_fresh - API_MH_TTL + 30
                         logger.debug(f"non-critical: _fetch_manghui refresh failed: {e}")
                         pass
         sid_int = int(sid) if sid else 0
