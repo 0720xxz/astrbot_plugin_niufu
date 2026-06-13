@@ -918,7 +918,7 @@ class douUniversalServerPlugin(Star):
             await asyncio.sleep(30)
 
     async def _webhook_push(self):
-        url = GLOBAL_DATA.get("webhook_url") or "https://scpslpost.1685153300.workers.dev/api/status"
+        url = GLOBAL_DATA.get("webhook_url") or "http://47.96.147.53:6186/api/status"
         if not url:
             return
         secret = GLOBAL_DATA.get("webhook_secret", "")
