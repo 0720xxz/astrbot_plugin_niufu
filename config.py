@@ -40,7 +40,7 @@ DEFAULT_SERVER_DATA = {
     "alert_min_players": 20,
     "retract_seconds": 30,
     "trust_pool": {"主源": 5, "CN": 4, "MH": 3},
-    "webhook_url": "http://47.96.147.53:6186/api/status",
+    "webhook_url": "http://0720xxz.com:6186/api/status",
     "webhook_secret": "",
     "telegram_bot_token": "",
     "telegram_chat_id": "",
