@@ -116,6 +116,7 @@ class douUniversalServerPlugin(Star):
         self._mh_lock = asyncio.Lock()
         self._fetch_locks: dict[str, asyncio.Lock] = {}
         self._trust_pool = dict(GLOBAL_DATA.get("trust_pool", {"主源": 5, "CN": 4, "MH": 3}))
+        self._trust_log = []
         self._active_source = "主源"
 
     def _scan_bg_images(self):
@@ -624,11 +625,22 @@ class douUniversalServerPlugin(Star):
         return _active_instance_id == id(self)
 
     def _update_trust(self, source: str, agreed: bool):
+        old = self._trust_pool.get(source, 3)
         if not agreed:
-            self._trust_pool[source] = max(0, self._trust_pool.get(source, 3) - 1)
+            self._trust_pool[source] = max(0, old - 1)
         else:
-            self._trust_pool[source] = min(10, self._trust_pool.get(source, 3) + 0.5)
+            self._trust_pool[source] = min(10, old + 0.5)
+        new = self._trust_pool[source]
         GLOBAL_DATA["trust_pool"] = dict(self._trust_pool)
+        self._trust_log.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "source": source,
+            "old": old,
+            "new": new,
+            "reason": "agree" if agreed else "disagree"
+        })
+        if len(self._trust_log) > 200:
+            self._trust_log = self._trust_log[-100:]
         logger.info(f"[服务器框架] 信任池: 主源={self._trust_pool.get('主源',5)} CN={self._trust_pool.get('CN',4)} MH={self._trust_pool.get('MH',3)}")
 
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
@@ -933,6 +945,7 @@ class douUniversalServerPlugin(Star):
             payload = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "trust": dict(self._trust_pool),
+                "trust_log": self._trust_log[-20:],
                 "servers": status_list,
                 "alerts": [{"name": k, "type": v} for k, v in self._alerted.items()],
             }
