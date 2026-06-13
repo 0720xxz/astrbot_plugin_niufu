@@ -3672,6 +3672,9 @@ class douUniversalServerPlugin(Star):
         results.append(f"当前数据源: {self._active_source} | CN缓存: {len(self._cn_cache)}服 | MH缓存: {len(self._mh_cache)}服")
         tp = self._trust_pool
         results.append(f"信任池: 主源={tp.get('主源',5)} CN={tp.get('CN',4)} MH={tp.get('MH',3)}")
+        web_ping = await self._tcp_ping("0720xxz.com", 80, timeout=3)
+        web_ping6186 = await self._tcp_ping("0720xxz.com", 6186, timeout=3)
+        results.append(f"服务器连接: web(80)={'{}ms'.format(web_ping) if web_ping else '不可达'} | hook(6186)={'{}ms'.format(web_ping6186) if web_ping6186 else '不可达'}")
         bg_info = ", ".join([p.name for p in self._bg_images]) if self._bg_images else "无"
         results.append(f"背景图({len(self._bg_images)}): {bg_info}")
         for chunk in self._reply_at(event, "\n".join(results)):
