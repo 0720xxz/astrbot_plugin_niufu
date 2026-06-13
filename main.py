@@ -940,7 +940,7 @@ class douUniversalServerPlugin(Star):
             return None
 
     async def _webhook_push(self):
-        url = GLOBAL_DATA.get("webhook_url") or "http://0720xxz.com:6186/api/status"
+        url = GLOBAL_DATA.get("webhook_url") or "http://154.37.222.5:6186/api/status"
         if not url:
             return
         secret = GLOBAL_DATA.get("webhook_secret", "")
