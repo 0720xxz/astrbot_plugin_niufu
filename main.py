@@ -2609,13 +2609,14 @@ class douUniversalServerPlugin(Star):
             if recent:
                 hist_data[name] = recent[-count:]
 
-        empty = not cmd_filtered and not err_filtered and not hist_data
+        trust_log = [e for e in self._trust_log if e.get("time", "")[:5] == date_prefix[5:]] if hasattr(self, '_trust_log') else []
+        empty = not cmd_filtered and not err_filtered and not hist_data and not trust_log
         if empty:
             for chunk in self._reply_at(event, f"{target_date} 无日志记录。"):
                 yield chunk
             return
 
-        img_path = await asyncio.to_thread(self._render_log_image, date_prefix, cmd_filtered, err_filtered, hist_data, count, page)
+        img_path = await asyncio.to_thread(self._render_log_image, date_prefix, cmd_filtered, err_filtered, hist_data, count, page, trust_log)
         if not img_path:
             for chunk in self._reply_at(event, "渲染日志图片失败。"):
                 yield chunk
@@ -2636,7 +2637,7 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, "发送日志图片失败。"):
                 yield chunk
 
-    def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count, page=0):
+    def _render_log_image(self, date_str, cmd_logs, err_logs, hist_data, max_count, page=0, trust_log=None):
         f_title = self._load_font(20, bold=True)
         f_section = self._load_font(15, bold=True)
         f_row = self._load_font(12)
@@ -2672,6 +2673,13 @@ class douUniversalServerPlugin(Star):
                 vals = [f"{e.get('players','?')}/{e.get('max','?')}" for e in entries[-10:]]
                 recent_vals = "  ".join(vals)
                 rows.append(f"{name}: {recent_vals}")
+
+        if trust_log:
+            rows.append("")
+            rows.append("--- 信任变动日志 ---")
+            for e in trust_log[-30:]:
+                arrow = "+" if e.get("new", 0) > e.get("old", 0) else "-"
+                rows.append(f"{e.get('time','')} {e.get('source','')} {e.get('old','')}>{e.get('new','')} {e.get('reason','')}")
 
         row_h = 22
         rows_per_page = 40
