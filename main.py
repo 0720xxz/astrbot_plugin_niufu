@@ -1934,7 +1934,6 @@ class douUniversalServerPlugin(Star):
         for chunk in self._reply_at(event, help_text):
             yield chunk
 
-    @filter.command("开启无斜杠")
     async def _set_noslash(self, event: AstrMessageEvent, enable: bool):
         if not await self._is_admin(event):
             return
@@ -2389,7 +2388,6 @@ class douUniversalServerPlugin(Star):
             for chunk in self._reply_at(event, f"群 {group_id} 未绑定任何服务器组。"):
                 yield chunk
 
-    @filter.command("开启模糊匹配")
     async def _set_fuzzy(self, event: AstrMessageEvent, enable: bool):
         if not await self._is_admin(event):
             return
