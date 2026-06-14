@@ -949,20 +949,30 @@ class douUniversalServerPlugin(Star):
             return
         secret = GLOBAL_DATA.get("webhook_secret", "")
         try:
+            import socket as _socket
+            local_ip = ""
+            try:
+                local_ip = _socket.gethostbyname(_socket.gethostname())
+            except Exception:
+                pass
             servers = GLOBAL_DATA["servers"]
             active = [s for s in servers if self.toggle_state.get(_get_toggle_key(s["group"], s["default_name"]), True)]
             status_list = []
             for s in active:
-                data = self.server_cache.get(s["id"], {}).get("data")
+                entry = self.server_cache.get(s["id"], {})
+                data = entry.get("data")
                 online = data.get("online", False) if data else False
                 ip = data.get("ip", "") if data else ""
                 port = data.get("port", "") if data else ""
                 ping = None
                 if ip and port:
                     ping = await self._tcp_ping(ip, port, timeout=3)
-                status_list.append({"id": s["id"], "online": online, "ping": ping, "ip": ip, "port": port})
+                fetch_ts = entry.get("ts")
+                fetch_time = datetime.fromtimestamp(fetch_ts).strftime("%H:%M:%S") if fetch_ts else ""
+                status_list.append({"id": s["id"], "name": s["display_name"], "online": online, "ping": ping, "ip": ip, "port": port, "fetch_time": fetch_time})
             payload = {
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "local_ip": local_ip,
                 "trust": dict(self._trust_pool),
                 "trust_log": self._trust_log[-20:],
                 "servers": status_list,
