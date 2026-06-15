@@ -194,19 +194,17 @@ class douUniversalServerPlugin(Star):
                                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=FETCH_TIMEOUT)) as resp:
                                     if resp.status == 200:
                                         data = await resp.json()
-                                        self.server_cache[cache_key] = {"ts": now_ts, "data": data}
+                                        self.server_cache[cache_key] = {"ts": datetime.now().timestamp(), "data": data}
                                         self._cache_dirty = True
                                         self._store_raw_response(sid, data)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"non-critical: bg_refresh for {cache_key}: {e}")
                         self._create_tracked_task(_bg_refresh())
                     return cached_data
         key = str(cache_key)
         if key not in self._fetch_locks:
             self._fetch_locks[key] = asyncio.Lock()
         lock = self._fetch_locks[key]
-        if len(self._fetch_locks) > 200:
-            self._fetch_locks.clear()
         async with lock:
             entry2 = self.server_cache.get(cache_key)
             if entry2 and (now_ts - entry2.get("ts", 0)) < self.cache_ttl:
@@ -217,9 +215,10 @@ class douUniversalServerPlugin(Star):
                     if resp.status == 200:
                         data = await resp.json()
                         self.server_cache[cache_key] = {"ts": now_ts, "data": data}
-                        if len(self.server_cache) > 200:
-                            stale = sorted(self.server_cache, key=lambda k: self.server_cache[k].get("ts", 0))[:100]
-                            for k in stale:
+                        if len(self.server_cache) > 400:
+                            now_ts2 = datetime.now().timestamp()
+                            stale = [k for k in self.server_cache if now_ts2 - self.server_cache[k].get("ts", 0) > self.cache_ttl * 2]
+                            for k in stale[:200]:
                                 self.server_cache.pop(k, None)
                         self._cache_dirty = True
                         self._store_raw_response(sid, data)
@@ -1075,7 +1074,6 @@ class douUniversalServerPlugin(Star):
             self._save_history(name, data.get("players", "0/0"), data.get("max_players"))
         if data is None:
             await asyncio.sleep(2)
-            self.server_cache.pop(cache_key, None)
             data2 = await self._fetch(url, sid=s["id"])
             if data2 is None and name not in self._alerted:
                 self._push_alert(grp, name, "离线", "服务器多次请求失败，确认已离线")
